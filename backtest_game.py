@@ -31,29 +31,66 @@ ACTUAL_RESULTS = {
     "Josh Hart": {"pts": 14, "reb": 9, "ast": 2, "fg3m": 2, "pra": 25},
 }
 
-# Weights for averaging periods
+# Weights for averaging periods (favor recent form)
 WEIGHTS = {
-    "last_5": 0.45,
-    "last_10": 0.35,
-    "season": 0.20
+    "last_5": 0.55,
+    "last_10": 0.30,
+    "season": 0.15
 }
 
+# Weights when role change detected
+ROLE_CHANGE_WEIGHTS = {
+    "last_5": 0.70,
+    "last_10": 0.20,
+    "season": 0.10
+}
+
+def detect_role_change(profile):
+    """Detect if player's role has recently changed based on minutes or scoring trend"""
+    l5_min = profile.last_5_avg.get("min", 0)
+    l10_min = profile.last_10_avg.get("min", 0)
+    l5_pts = profile.last_5_avg.get("pts", 0)
+    l10_pts = profile.last_10_avg.get("pts", 0)
+
+    min_change = 0.0
+    pts_change = 0.0
+
+    if l10_min > 0:
+        min_change = (l5_min - l10_min) / l10_min
+
+    if l10_pts > 0:
+        pts_change = (l5_pts - l10_pts) / l10_pts
+
+    # Expanded: 15%+ minutes increase OR 10%+ scoring increase
+    if min_change >= 0.15 or pts_change >= 0.10:
+        return True, "expanded"
+
+    # Reduced: 15%+ minutes decrease OR 10%+ scoring decrease
+    if min_change <= -0.15 or pts_change <= -0.10:
+        return True, "reduced"
+
+    return False, ""
+
 def get_weighted_avg(profile, stat_key):
-    """Calculate weighted average for a stat"""
+    """Calculate weighted average for a stat, adjusting for role changes"""
     values = []
     weights = []
 
+    # Detect role change and select appropriate weights
+    role_changed, _ = detect_role_change(profile)
+    weight_set = ROLE_CHANGE_WEIGHTS if role_changed else WEIGHTS
+
     if stat_key in profile.last_5_avg:
         values.append(profile.last_5_avg[stat_key])
-        weights.append(WEIGHTS["last_5"])
+        weights.append(weight_set["last_5"])
 
     if stat_key in profile.last_10_avg:
         values.append(profile.last_10_avg[stat_key])
-        weights.append(WEIGHTS["last_10"])
+        weights.append(weight_set["last_10"])
 
     if stat_key in profile.season_avg:
         values.append(profile.season_avg[stat_key])
-        weights.append(WEIGHTS["season"])
+        weights.append(weight_set["season"])
 
     if not values:
         return 0

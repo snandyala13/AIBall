@@ -385,6 +385,12 @@ class BetGenerator:
         else:
             factors.append(f"Bench player ({proj.projected_minutes:.0f} min)")
 
+        # Role change detection
+        if proj.role_change == "expanded":
+            factors.append("📈 Expanded role (min trending up)")
+        elif proj.role_change == "reduced":
+            factors.append("📉 Reduced role (min trending down)")
+
         # Projection vs line
         diff = proj.projected_value - proj.dk_line
         if side == "over":

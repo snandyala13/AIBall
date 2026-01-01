@@ -118,6 +118,7 @@ class Projection:
     # Metadata
     source_layer: str = "baseline"  # baseline, popoff, correlation
     games_sample: int = 0
+    role_change: str = ""  # "expanded", "reduced", or ""
 
 
 @dataclass
@@ -203,15 +204,56 @@ class ProjectionEngine:
     then applies all adjustments.
     """
 
-    # Weights for averaging periods
+    # Base weights for averaging periods (favor recent form)
     WEIGHTS = {
-        "last_5": 0.45,
-        "last_10": 0.35,
-        "season": 0.20
+        "last_5": 0.55,
+        "last_10": 0.30,
+        "season": 0.15
+    }
+
+    # Weights when role change detected (heavily favor recent)
+    ROLE_CHANGE_WEIGHTS = {
+        "last_5": 0.70,
+        "last_10": 0.20,
+        "season": 0.10
     }
 
     def __init__(self, pipeline: DataPipeline):
         self.pipeline = pipeline
+
+    def detect_role_change(self, profile: PlayerProfile) -> Tuple[bool, str]:
+        """
+        Detect if player's role has recently changed based on minutes or scoring trend.
+
+        Returns: (role_changed, direction)
+            - role_changed: True if significant change detected
+            - direction: "expanded" or "reduced" or ""
+        """
+        l5_min = profile.last_5_avg.get("min", 0)
+        l10_min = profile.last_10_avg.get("min", 0)
+        l5_pts = profile.last_5_avg.get("pts", 0)
+        l10_pts = profile.last_10_avg.get("pts", 0)
+
+        min_change = 0.0
+        pts_change = 0.0
+
+        # Calculate minutes trend
+        if l10_min > 0:
+            min_change = (l5_min - l10_min) / l10_min
+
+        # Calculate scoring trend
+        if l10_pts > 0:
+            pts_change = (l5_pts - l10_pts) / l10_pts
+
+        # Expanded role: 15%+ increase in minutes OR 10%+ increase in scoring
+        if min_change >= 0.15 or pts_change >= 0.10:
+            return True, "expanded"
+
+        # Reduced role: 15%+ decrease in minutes OR 10%+ decrease in scoring
+        if min_change <= -0.15 or pts_change <= -0.10:
+            return True, "reduced"
+
+        return False, ""
 
     def project_minutes(
         self,
@@ -268,23 +310,28 @@ class ProjectionEngine:
     def get_weighted_stat(
         self,
         profile: PlayerProfile,
-        stat_key: str
+        stat_key: str,
+        use_role_change: bool = True
     ) -> float:
-        """Get weighted average for a single stat"""
+        """Get weighted average for a single stat, adjusting for role changes"""
         values = []
         weights = []
 
+        # Detect role change and select appropriate weights
+        role_changed, direction = self.detect_role_change(profile) if use_role_change else (False, "")
+        weight_set = self.ROLE_CHANGE_WEIGHTS if role_changed else self.WEIGHTS
+
         if stat_key in profile.last_5_avg:
             values.append(profile.last_5_avg[stat_key])
-            weights.append(self.WEIGHTS["last_5"])
+            weights.append(weight_set["last_5"])
 
         if stat_key in profile.last_10_avg:
             values.append(profile.last_10_avg[stat_key])
-            weights.append(self.WEIGHTS["last_10"])
+            weights.append(weight_set["last_10"])
 
         if stat_key in profile.season_avg:
             values.append(profile.season_avg[stat_key])
-            weights.append(self.WEIGHTS["season"])
+            weights.append(weight_set["season"])
 
         if not values:
             return 0.0
@@ -867,6 +914,9 @@ class ModelEngine:
         # Get std dev
         std_dev = self.projection_engine.calculate_std_dev(profile, prop_type)
 
+        # Detect role change
+        _, role_direction = self.projection_engine.detect_role_change(profile)
+
         # Create projection
         proj = Projection(
             player_name=profile.name,
@@ -884,7 +934,8 @@ class ModelEngine:
             defense_adjustment=round(adjustments.get("defense", 0), 2),
             usage_boost=round(usage_boost, 2),
             source_layer="popoff" if usage_boost > 0 else "baseline",
-            games_sample=len(profile.game_logs)
+            games_sample=len(profile.game_logs),
+            role_change=role_direction
         )
 
         return proj
