@@ -428,6 +428,16 @@ class ProjectionEngine:
         projected *= pace_factor
         adjustments["pace"] = pace_adj
 
+        # ANTI-OVERESTIMATION: Regress toward baseline
+        # Data showed we overestimate by +2.79 on average (74.7% of picks)
+        # This dampens extreme projections while keeping direction
+        # Blend: 85% adjusted projection + 15% baseline
+        # This prevents runaway projections while preserving edge
+        base = adjustments["base"]
+        if base > 0:
+            regression_factor = 0.15
+            projected = (projected * (1 - regression_factor)) + (base * regression_factor)
+
         return max(0, projected), adjustments
 
     def _project_combined_stat(
@@ -648,6 +658,13 @@ class EdgeCalculator:
         Calculate edge on over and under.
 
         Returns: (edge_over, edge_under, our_over_prob, our_under_prob)
+
+        IMPORTANT: Backtest data showed high edge picks underperform:
+        - 5-7% edge: 56.6% hit rate (good!)
+        - 20-30% edge: 36.5% hit rate (disaster!)
+
+        The market is more efficient than we think. High edge claims are overconfident.
+        We cap reported edge to prevent overconfidence.
         """
         our_over_prob = self.calculate_over_probability(projection, line, std_dev, stat_type)
         our_under_prob = 1 - our_over_prob
@@ -657,6 +674,13 @@ class EdgeCalculator:
 
         edge_over = (our_over_prob - implied_over) * 100  # As percentage
         edge_under = (our_under_prob - implied_under) * 100
+
+        # CAP EDGE: Data showed >12% edge picks underperform
+        # The market is smarter than we think - high edge = overconfidence
+        # Cap at 12% to keep picks in the profitable zone
+        MAX_EDGE = 12.0
+        edge_over = min(edge_over, MAX_EDGE)
+        edge_under = min(edge_under, MAX_EDGE)
 
         return edge_over, edge_under, our_over_prob, our_under_prob
 
@@ -828,36 +852,67 @@ class PopOffHunter:
         scratched: PlayerProfile,
         prop_type: PropType
     ) -> float:
-        """Calculate how much of scratched player's production goes to beneficiary"""
+        """
+        Calculate percentage boost when a teammate is out.
+
+        Returns a MULTIPLIER (e.g., 1.08 = 8% boost), not raw points.
+        This is more stable and prevents the crazy projections we were seeing.
+
+        Key insight from backtest: High boosts (>1.10) actually hurt performance.
+        The market already prices in injuries. Our edge is in being more accurate
+        about WHICH players benefit and by how much.
+        """
         scratched_pos = scratched.position.upper() if scratched.position else "SF"
         beneficiary_pos = beneficiary.position.upper() if beneficiary.position else "SF"
 
         # Normalize positions
-        for pos in [scratched_pos, beneficiary_pos]:
-            if pos not in ["PG", "SG", "SF", "PF", "C"]:
-                if "G" in pos:
-                    pos = "SG"
-                elif "F" in pos:
-                    pos = "SF"
+        if scratched_pos not in ["PG", "SG", "SF", "PF", "C"]:
+            scratched_pos = "SG" if "G" in scratched_pos else "SF"
+        if beneficiary_pos not in ["PG", "SG", "SF", "PF", "C"]:
+            beneficiary_pos = "SG" if "G" in beneficiary_pos else "SF"
 
-        # Get redistribution factor
+        # Get redistribution factor based on position compatibility
         redistribution = AdjustmentFactors.USAGE_REDISTRIBUTION.get(scratched_pos, {})
-        factor = redistribution.get(beneficiary_pos, 0.15)
+        base_factor = redistribution.get(beneficiary_pos, 0.10)
 
-        # Get scratched player's production
+        # Get stat key
         stat_key = STAT_MAPPING.get(prop_type)
         if not stat_key:
-            return 0.0
+            return 1.0  # No boost (multiplier of 1)
 
+        # Get scratched player's production
         scratched_avg = scratched.last_10_avg.get(stat_key, 0)
         if scratched_avg == 0:
             scratched_avg = scratched.season_avg.get(stat_key, 0)
 
-        # Usage boost also depends on beneficiary's usage
-        # High-usage players get more of the redistributed stats
-        usage_weight = min(1.5, beneficiary.usage_pct / 20) if beneficiary.usage_pct > 0 else 1.0
+        # Get beneficiary's baseline for this stat
+        beneficiary_avg = beneficiary.last_10_avg.get(stat_key, 0)
+        if beneficiary_avg == 0:
+            beneficiary_avg = beneficiary.season_avg.get(stat_key, 0)
 
-        return scratched_avg * factor * usage_weight
+        if beneficiary_avg == 0:
+            return 1.0  # Can't calculate boost without baseline
+
+        # Calculate boost as percentage of beneficiary's baseline
+        # If star scoring 25ppg is out and I average 15ppg:
+        # I might get 25 * 0.20 = 5 extra points = 5/15 = 33% boost
+        # But that's way too aggressive. Scale it down.
+        raw_boost_pct = (scratched_avg * base_factor) / beneficiary_avg
+
+        # Apply usage weight - high usage players absorb more
+        # But cap at 1.2x to prevent runaway boosts
+        usage_weight = 1.0
+        if beneficiary.usage_pct > 0:
+            usage_weight = min(1.2, 0.8 + (beneficiary.usage_pct / 50))
+
+        # Calculate final boost percentage
+        boost_pct = raw_boost_pct * usage_weight
+
+        # Convert to multiplier (e.g., 0.08 boost -> 1.08 multiplier)
+        # Cap individual injury boost at 8% (data showed >10% hurts performance)
+        capped_boost = min(0.08, boost_pct)
+
+        return 1.0 + capped_boost
 
     def _get_position_group(self, position: str) -> str:
         """
@@ -927,7 +982,10 @@ class PopOffHunter:
         """
         Find all pop-off opportunities.
 
-        Returns: {player_name: {prop_type: usage_boost}}
+        Returns: {player_name: {prop_type: usage_boost_multiplier}}
+
+        The boost is now a MULTIPLIER (e.g., 1.12 = 12% boost) not raw points.
+        Multiple injuries combine multiplicatively but are capped at 1.15 total.
         """
         if prop_types is None:
             prop_types = [PropType.POINTS, PropType.REBOUNDS, PropType.ASSISTS, PropType.THREES, PropType.PRA]
@@ -949,37 +1007,37 @@ class PopOffHunter:
             pos_group = self._get_position_group(active.position)
             scarcity_mult = team_scarcity.get(active.team, {}).get(pos_group, 1.0)
 
-            for scratched in scratched_players:
-                # Only same team
-                if active.team != scratched.team:
-                    continue
+            for prop_type in prop_types:
+                # Start with base multiplier of 1.0 (no boost)
+                combined_multiplier = 1.0
 
-                for prop_type in prop_types:
-                    boost = self.calculate_usage_boost(active, scratched, prop_type)
-                    if boost > 0:
-                        # Apply position scarcity multiplier
-                        adjusted_boost = boost * scarcity_mult
-                        player_boosts[prop_type] = player_boosts.get(prop_type, 0) + adjusted_boost
+                for scratched in scratched_players:
+                    # Only same team
+                    if active.team != scratched.team:
+                        continue
+
+                    # Get boost multiplier for this injury
+                    boost_mult = self.calculate_usage_boost(active, scratched, prop_type)
+
+                    if boost_mult > 1.0:
+                        # Combine multipliers: (1.05) * (1.03) = 1.0815
+                        # This is more realistic than adding raw points
+                        combined_multiplier *= boost_mult
+
+                if combined_multiplier > 1.0:
+                    # Apply position scarcity as additional boost on the margin
+                    # e.g., 1.10 boost with 1.5x scarcity = 1.0 + (0.10 * 1.5) = 1.15
+                    boost_portion = combined_multiplier - 1.0
+                    scarcity_adjusted = 1.0 + (boost_portion * min(1.5, scarcity_mult))
+
+                    # Cap total boost at 15% - data showed higher hurts performance
+                    # The 1.05-1.10 range had best hit rate (65%)
+                    final_multiplier = min(1.15, scarcity_adjusted)
+
+                    player_boosts[prop_type] = final_multiplier
 
             if player_boosts:
-                # Cap boosts at realistic ceiling (player can only absorb so much)
-                # Max boost = player's season average for each stat
-                # This prevents 50+ point projections for bench players
-                capped_boosts = {}
-                for prop_type, boost_val in player_boosts.items():
-                    stat_key = STAT_MAPPING.get(prop_type)
-                    if stat_key:
-                        # Get player's baseline for this stat
-                        baseline = active.season_avg.get(stat_key, 0)
-                        if baseline == 0:
-                            baseline = active.last_10_avg.get(stat_key, 0)
-                        # Cap boost at 1.5x baseline (so 10 ppg player gets max +15 pts)
-                        max_boost = baseline * 1.5
-                        capped_boosts[prop_type] = min(boost_val, max_boost)
-                    else:
-                        capped_boosts[prop_type] = boost_val
-
-                boosts[active.name] = capped_boosts
+                boosts[active.name] = player_boosts
 
         return boosts
 
@@ -1009,9 +1067,13 @@ class ModelEngine:
         profile: PlayerProfile,
         prop_type: PropType,
         context: GameContext,
-        usage_boost: float = 0.0
+        usage_boost: float = 1.0
     ) -> Projection:
-        """Create a full projection for a player prop"""
+        """Create a full projection for a player prop
+
+        Args:
+            usage_boost: Multiplier for injury opportunity (1.0 = no boost, 1.10 = 10% boost)
+        """
 
         # Determine if home/away
         is_home = profile.team == context.home_team.name
@@ -1040,9 +1102,10 @@ class ModelEngine:
             opponent.defensive_rating, pace_factor
         )
 
-        # Apply usage boost from injuries
-        if usage_boost > 0:
-            projected_value += usage_boost
+        # Apply usage boost from injuries as a MULTIPLIER
+        # e.g., usage_boost=1.10 means 10% increase in projection
+        if usage_boost > 1.0:
+            projected_value *= usage_boost
 
         # Get std dev
         std_dev = self.projection_engine.calculate_std_dev(profile, prop_type)
@@ -1051,6 +1114,9 @@ class ModelEngine:
         _, role_direction = self.projection_engine.detect_role_change(profile)
 
         # Create projection
+        # Store usage_boost as the multiplier (1.10 for 10% boost)
+        # source_layer is "popoff" if we applied any injury boost
+        has_boost = usage_boost > 1.0
         proj = Projection(
             player_name=profile.name,
             prop_type=prop_type,
@@ -1065,8 +1131,8 @@ class ModelEngine:
             pace_adjustment=round(adjustments.get("pace", 0), 2),
             home_away_adjustment=round(adjustments.get("home_away", 0), 2),
             defense_adjustment=round(adjustments.get("defense", 0), 2),
-            usage_boost=round(usage_boost, 2),
-            source_layer="popoff" if usage_boost > 0 else "baseline",
+            usage_boost=round(usage_boost, 3),  # Now a multiplier like 1.10
+            source_layer="popoff" if has_boost else "baseline",
             games_sample=len(profile.game_logs),
             role_change=role_direction
         )
@@ -1199,14 +1265,15 @@ class ModelEngine:
         if popoff_boosts:
             for player, boosts in popoff_boosts.items():
                 for prop_type, boost in boosts.items():
-                    if boost > 0.5:  # Log significant boosts
-                        logger.info(f"Pop-off: {player} +{boost:.1f} {prop_type.value} from injuries")
+                    if boost > 1.05:  # Log significant boosts (>5%)
+                        boost_pct = (boost - 1.0) * 100
+                        logger.info(f"Pop-off: {player} +{boost_pct:.0f}% {prop_type.value} from injuries")
 
         # Create projections for each player/prop
         for profile in active:
             for prop_type in prop_types:
-                # Get usage boost if applicable
-                usage_boost = popoff_boosts.get(profile.name, {}).get(prop_type, 0)
+                # Get usage boost multiplier if applicable (default 1.0 = no boost)
+                usage_boost = popoff_boosts.get(profile.name, {}).get(prop_type, 1.0)
 
                 projection = self.create_projection(
                     profile, prop_type, context, usage_boost
