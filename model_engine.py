@@ -844,8 +844,92 @@ class PopOffHunter:
 
     POPOFF_THRESHOLD = 0.15  # 15% boost = pop-off candidate
 
+    # Time-decay thresholds for injury boosts
+    # If a player has been out for a long time, teammates have adjusted
+    INJURY_FRESH_GAMES = 3      # Full boost: out 0-3 games
+    INJURY_RECENT_GAMES = 7     # 75% boost: out 4-7 games
+    INJURY_MEDIUM_GAMES = 14    # 40% boost: out 8-14 games
+    INJURY_OLD_GAMES = 21       # 15% boost: out 15-21 games
+    # Beyond 21 games: no boost (team fully adjusted)
+
     def __init__(self, pipeline: DataPipeline):
         self.pipeline = pipeline
+
+    def _calculate_injury_time_decay(self, scratched: PlayerProfile) -> float:
+        """
+        Calculate time-decay multiplier based on how long player has been out.
+
+        If a player has been out for weeks, their teammates' recent stats
+        ALREADY reflect the increased usage. Boosting again would double-count.
+
+        IMPORTANT: Check for actual playing time (minutes > 0), not just game dates.
+        The API returns DNP entries where players have 0 minutes - those don't count.
+
+        Returns: multiplier from 0.0 to 1.0
+        - 1.0 = fresh injury, apply full boost
+        - 0.0 = long-term injury, teammates have fully adjusted
+        """
+        from datetime import datetime, timedelta
+
+        if not scratched.game_logs:
+            # No game logs = likely out for a very long time
+            return 0.0
+
+        # Find most recent game WHERE PLAYER ACTUALLY PLAYED (minutes > 0)
+        most_recent_played = None
+        for log in scratched.game_logs:
+            # Skip DNP entries - player didn't actually play
+            if log.minutes <= 0:
+                continue
+
+            game_date = log.date
+            if isinstance(game_date, str):
+                try:
+                    game_date = datetime.strptime(game_date, "%Y-%m-%d")
+                except:
+                    continue
+            if most_recent_played is None or game_date > most_recent_played:
+                most_recent_played = game_date
+
+        if most_recent_played is None:
+            # No games with actual playing time = out for a long time
+            return 0.0
+
+        # Calculate days since last ACTUAL game
+        today = datetime.now()
+        if isinstance(most_recent_played, datetime):
+            days_out = (today - most_recent_played).days
+        else:
+            return 0.5  # Default if we can't determine
+
+        # Check if the game was from a previous season
+        # NBA season runs Oct-Apr. If last game was before Oct 1 of current season year,
+        # treat as long-term absence (player hasn't played this season)
+        current_year = today.year
+        if today.month >= 10:
+            season_start = datetime(current_year, 10, 1)
+        else:
+            season_start = datetime(current_year - 1, 10, 1)
+
+        if most_recent_played < season_start:
+            # Player hasn't played this season at all - no boost
+            # Teammates have fully adjusted over months
+            return 0.0
+
+        # Convert days to approximate games (roughly 1 game every 2 days during season)
+        games_out = days_out // 2
+
+        # Apply time-decay based on games missed
+        if games_out <= self.INJURY_FRESH_GAMES:
+            return 1.0  # Full boost
+        elif games_out <= self.INJURY_RECENT_GAMES:
+            return 0.75  # Recent injury
+        elif games_out <= self.INJURY_MEDIUM_GAMES:
+            return 0.40  # Team partially adjusted
+        elif games_out <= self.INJURY_OLD_GAMES:
+            return 0.15  # Team mostly adjusted
+        else:
+            return 0.0  # Fully adjusted, no boost
 
     def calculate_usage_boost(
         self,
@@ -908,6 +992,11 @@ class PopOffHunter:
 
         # Calculate final boost percentage
         boost_pct = raw_boost_pct * usage_weight
+
+        # Apply time-decay based on how long the player has been out
+        # If they've been out for weeks, teammates have already adjusted
+        time_decay = self._calculate_injury_time_decay(scratched)
+        boost_pct *= time_decay
 
         # Convert to multiplier (e.g., 0.08 boost -> 1.08 multiplier)
         # Cap individual injury boost at 8% (data showed >10% hurts performance)
@@ -1031,9 +1120,9 @@ class PopOffHunter:
                     boost_portion = combined_multiplier - 1.0
                     scarcity_adjusted = 1.0 + (boost_portion * min(1.5, scarcity_mult))
 
-                    # Cap total boost at 15% - data showed higher hurts performance
-                    # The 1.05-1.10 range had best hit rate (65%)
-                    final_multiplier = min(1.15, scarcity_adjusted)
+                    # Cap total boost at 10% - backtest showed large boosts hurt accuracy
+                    # No boost: 59.7%, Large boost (10-20%): 55.9% (p=0.002)
+                    final_multiplier = min(1.10, scarcity_adjusted)
 
                     player_boosts[prop_type] = final_multiplier
 

@@ -356,7 +356,13 @@ def backtest_game_with_real_lines(game_data: dict, pipeline: DataPipeline,
             "edge": round(edge, 1),
             "implied_prob": round(implied_over if pick == "OVER" else implied_under, 3),
             "usage_boost": proj.usage_boost,
-            "role_change": proj.role_change
+            "role_change": proj.role_change,
+            # Additional model details for analysis
+            "std_dev": round(proj.std_dev, 2),
+            "projected_minutes": round(proj.projected_minutes, 1) if proj.projected_minutes else None,
+            "confidence": round(proj.confidence, 2) if proj.confidence else None,
+            "diff_from_line": round(proj.projected_value - real_line, 1),
+            "diff_pct": round((proj.projected_value - real_line) / real_line * 100, 1) if real_line > 0 else 0
         })
 
     return result
@@ -595,21 +601,206 @@ def generate_report(results: list, output_file: str):
     return report_text
 
 
+def generate_parlay_analysis(results: list, output_file: str):
+    """Generate comprehensive parlay analysis and save all bets"""
+
+    all_legs = []
+    games_data = []
+
+    for r in results:
+        game_legs = []
+        for leg in r["legs"]:
+            leg["game_id"] = r["game_id"]
+            leg["matchup"] = r["matchup"]
+            leg["date"] = r["date"]
+            all_legs.append(leg)
+            game_legs.append(leg)
+
+        games_data.append({
+            "game_id": r["game_id"],
+            "matchup": r["matchup"],
+            "date": r["date"],
+            "injuries": r.get("injuries", []),
+            "legs": game_legs,
+            "props_matched": r.get("props_matched", 0),
+            "props_missing": r.get("props_missing", 0),
+            "error": r.get("error")
+        })
+
+    # Generate 2-leg parlays (same game - SGP)
+    sgp_parlays = []
+    from itertools import combinations
+
+    for game in games_data:
+        legs = game["legs"]
+        if len(legs) >= 2:
+            for leg1, leg2 in combinations(legs, 2):
+                # Skip if same player
+                if leg1["player"] == leg2["player"]:
+                    continue
+
+                parlay = {
+                    "type": "SGP",
+                    "game_id": game["game_id"],
+                    "matchup": game["matchup"],
+                    "date": game["date"],
+                    "leg1": leg1,
+                    "leg2": leg2,
+                    "combined_prob": leg1["probability"] * leg2["probability"],
+                    "combined_edge": (leg1["edge"] + leg2["edge"]) / 2,
+                    "hit": leg1["hit"] and leg2["hit"]
+                }
+                sgp_parlays.append(parlay)
+
+    # Generate cross-game parlays
+    cross_game_parlays = []
+    games_by_date = defaultdict(list)
+    for game in games_data:
+        games_by_date[game["date"]].append(game)
+
+    for date, date_games in games_by_date.items():
+        if len(date_games) >= 2:
+            for g1, g2 in combinations(date_games, 2):
+                if g1["legs"] and g2["legs"]:
+                    # Pick best leg from each game
+                    best1 = max(g1["legs"], key=lambda x: x["edge"] * x["probability"])
+                    best2 = max(g2["legs"], key=lambda x: x["edge"] * x["probability"])
+
+                    parlay = {
+                        "type": "Cross-Game",
+                        "date": date,
+                        "game1": g1["matchup"],
+                        "game2": g2["matchup"],
+                        "leg1": best1,
+                        "leg2": best2,
+                        "combined_prob": best1["probability"] * best2["probability"],
+                        "combined_edge": (best1["edge"] + best2["edge"]) / 2,
+                        "hit": best1["hit"] and best2["hit"]
+                    }
+                    cross_game_parlays.append(parlay)
+
+    # Calculate parlay stats
+    def calc_parlay_stats(parlays):
+        if not parlays:
+            return {"total": 0, "hits": 0, "rate": 0, "profit": 0, "roi": 0}
+        hits = sum(1 for p in parlays if p["hit"])
+        profit = (hits * 2.5) - len(parlays)  # ~+250 odds for 2-leg
+        roi = (profit / len(parlays)) * 100 if parlays else 0
+        return {
+            "total": len(parlays),
+            "hits": hits,
+            "rate": round(hits / len(parlays) * 100, 1),
+            "profit": round(profit, 1),
+            "roi": round(roi, 1)
+        }
+
+    sgp_stats = calc_parlay_stats(sgp_parlays)
+    cross_stats = calc_parlay_stats(cross_game_parlays)
+
+    # Filter parlays by different strategies for analysis
+    high_prob_sgp = [p for p in sgp_parlays if p["combined_prob"] >= 0.35]
+    low_edge_sgp = [p for p in sgp_parlays if p["leg1"]["edge"] < 10 and p["leg2"]["edge"] < 10]
+    under_parlays = [p for p in sgp_parlays + cross_game_parlays
+                     if p["leg1"]["pick"] == "UNDER" or p["leg2"]["pick"] == "UNDER"]
+    both_under = [p for p in sgp_parlays + cross_game_parlays
+                  if p["leg1"]["pick"] == "UNDER" and p["leg2"]["pick"] == "UNDER"]
+
+    # Save comprehensive JSON output
+    output_data = {
+        "metadata": {
+            "generated": datetime.now().isoformat(),
+            "total_games": len(games_data),
+            "total_legs": len(all_legs),
+            "date_range": {
+                "start": min(g["date"] for g in games_data if g["date"]),
+                "end": max(g["date"] for g in games_data if g["date"])
+            }
+        },
+        "leg_summary": {
+            "total": len(all_legs),
+            "hits": sum(1 for l in all_legs if l["hit"]),
+            "rate": round(sum(1 for l in all_legs if l["hit"]) / len(all_legs) * 100, 1) if all_legs else 0
+        },
+        "parlay_summary": {
+            "sgp": sgp_stats,
+            "cross_game": cross_stats,
+            "high_prob_sgp": calc_parlay_stats(high_prob_sgp),
+            "low_edge_sgp": calc_parlay_stats(low_edge_sgp),
+            "at_least_one_under": calc_parlay_stats(under_parlays),
+            "both_under": calc_parlay_stats(both_under)
+        },
+        "games": games_data,
+        "legs": all_legs,
+        "sgp_parlays": sgp_parlays[:500],  # Limit for file size
+        "cross_game_parlays": cross_game_parlays[:500]
+    }
+
+    json_output = output_file.replace(".txt", "_full.json")
+    with open(json_output, "w") as f:
+        json.dump(output_data, f, indent=2, default=str)
+
+    print(f"\nFull data saved to: {json_output}")
+
+    # Print parlay summary
+    print("\n" + "=" * 70)
+    print("PARLAY ANALYSIS SUMMARY")
+    print("=" * 70)
+    print(f"\nSGP (Same Game Parlays): {sgp_stats['total']} total")
+    print(f"  Hit Rate: {sgp_stats['hits']}/{sgp_stats['total']} = {sgp_stats['rate']}%")
+    print(f"  Profit: {sgp_stats['profit']:+.1f} units | ROI: {sgp_stats['roi']:+.1f}%")
+
+    print(f"\nCross-Game Parlays: {cross_stats['total']} total")
+    print(f"  Hit Rate: {cross_stats['hits']}/{cross_stats['total']} = {cross_stats['rate']}%")
+    print(f"  Profit: {cross_stats['profit']:+.1f} units | ROI: {cross_stats['roi']:+.1f}%")
+
+    print(f"\nStrategy Breakdown:")
+    for name, stats in [
+        ("High Prob SGP (>35%)", calc_parlay_stats(high_prob_sgp)),
+        ("Low Edge SGP (<10%)", calc_parlay_stats(low_edge_sgp)),
+        ("At Least One UNDER", calc_parlay_stats(under_parlays)),
+        ("Both UNDER", calc_parlay_stats(both_under))
+    ]:
+        if stats["total"] > 0:
+            print(f"  {name}: {stats['hits']}/{stats['total']} = {stats['rate']}% (ROI: {stats['roi']:+.1f}%)")
+
+    return output_data
+
+
 if __name__ == "__main__":
     output_file = "/Users/suhaasnandyala/Documents/aiBall/outputs/backtest_real_lines.txt"
 
-    # Last 7 days
-    dates = [
-        "2025-12-25",
-        "2025-12-26",
-        "2025-12-27",
-        "2025-12-28",
-        "2025-12-29",
-        "2025-12-30",
-        "2025-12-31"
+    # Generate all available historical data (full season)
+    # 2024-25 season: Oct 22, 2024 - Apr 13, 2025 (includes backfilled data)
+    # 2025-26 season: Oct 24, 2025 - Jan 2, 2026
+    from datetime import datetime, timedelta
+
+    # Two date ranges - now includes backfilled early season data
+    ranges = [
+        (datetime(2024, 10, 22), datetime(2025, 4, 13)),  # 2024-25 season (full)
+        (datetime(2025, 10, 24), datetime(2026, 1, 2)),   # 2025-26 season
     ]
 
+    dates = []
+    for start_date, end_date in ranges:
+        current = start_date
+        while current <= end_date:
+            dates.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+    # Remove duplicates and sort
+    dates = sorted(set(dates))
+
+    # Create timestamped output files
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = "/Users/suhaasnandyala/Documents/aiBall/outputs"
+
+    output_file = f"{output_dir}/backtest_real_lines.txt"
+    detailed_report = f"{output_dir}/backtest_detailed_{timestamp}.txt"
+    predictions_file = f"{output_dir}/backtest_predictions_{timestamp}.json"
+
     print(f"Starting backtest with REAL lines for {len(dates)} days...")
+    print(f"Date range: {dates[0]} to {dates[-1]}")
+    print(f"Model changes: usage_boost cap=1.10, UNDER pref=1.15, threes penalty=0.75")
     start_time = time.time()
 
     results = run_backtest_real_lines(dates, output_file)
@@ -621,3 +812,139 @@ if __name__ == "__main__":
     report = generate_report(results, output_file)
     print(report)
     print(f"\nSaved to: {output_file}")
+
+    # Generate comprehensive parlay analysis
+    print("\nGenerating parlay analysis...")
+    parlay_data = generate_parlay_analysis(results, output_file)
+
+    # Save all predictions to JSON for detailed analysis
+    print(f"\nSaving all predictions to: {predictions_file}")
+    all_predictions = []
+    for r in results:
+        for leg in r.get("legs", []):
+            leg["game_date"] = r.get("date")
+            leg["matchup"] = r.get("matchup")
+            all_predictions.append(leg)
+
+    with open(predictions_file, "w") as f:
+        json.dump({
+            "metadata": {
+                "generated": datetime.now().isoformat(),
+                "model_version": "v2_conservative",
+                "changes": [
+                    "usage_boost capped at 1.10 (was 1.15)",
+                    "UNDER preference multiplier 1.15",
+                    "threes deprioritized (0.75 penalty)"
+                ],
+                "total_predictions": len(all_predictions),
+                "date_range": f"{dates[0]} to {dates[-1]}"
+            },
+            "predictions": all_predictions
+        }, f, indent=2, default=str)
+
+    # Generate detailed text report
+    print(f"\nGenerating detailed report: {detailed_report}")
+    with open(detailed_report, "w") as f:
+        f.write("=" * 80 + "\n")
+        f.write("DETAILED BACKTEST REPORT - MODEL V2 (Conservative Changes)\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Date range: {dates[0]} to {dates[-1]}\n")
+        f.write(f"Total games: {len(results)}\n")
+        f.write(f"Total predictions: {len(all_predictions)}\n\n")
+
+        f.write("MODEL CHANGES:\n")
+        f.write("  - Usage boost capped at 10% (was 15%)\n")
+        f.write("  - UNDER picks get 15% score boost\n")
+        f.write("  - Threes props get 25% score penalty\n\n")
+
+        f.write("=" * 80 + "\n")
+        f.write("PERFORMANCE SUMMARY\n")
+        f.write("=" * 80 + "\n")
+        f.write(report)
+        f.write("\n\n")
+
+        # Detailed breakdown by category
+        f.write("=" * 80 + "\n")
+        f.write("PREDICTION ACCURACY BY CATEGORY\n")
+        f.write("=" * 80 + "\n\n")
+
+        # By prop type
+        from collections import defaultdict
+        by_prop = defaultdict(lambda: {"total": 0, "hits": 0})
+        by_direction = defaultdict(lambda: {"total": 0, "hits": 0})
+        by_edge = defaultdict(lambda: {"total": 0, "hits": 0})
+        by_boost = defaultdict(lambda: {"total": 0, "hits": 0})
+
+        for p in all_predictions:
+            prop = p.get("prop_type", "unknown")
+            by_prop[prop]["total"] += 1
+            if p.get("hit"):
+                by_prop[prop]["hits"] += 1
+
+            direction = p.get("pick", "OVER")
+            by_direction[direction]["total"] += 1
+            if p.get("hit"):
+                by_direction[direction]["hits"] += 1
+
+            edge = p.get("edge", 0)
+            if edge < 8:
+                bucket = "5-8%"
+            elif edge < 12:
+                bucket = "8-12%"
+            else:
+                bucket = "12%+"
+            by_edge[bucket]["total"] += 1
+            if p.get("hit"):
+                by_edge[bucket]["hits"] += 1
+
+            boost = p.get("usage_boost", 1.0)
+            if boost <= 1.01:
+                b_bucket = "No boost"
+            elif boost <= 1.05:
+                b_bucket = "Small (1-5%)"
+            else:
+                b_bucket = "Medium+ (5%+)"
+            by_boost[b_bucket]["total"] += 1
+            if p.get("hit"):
+                by_boost[b_bucket]["hits"] += 1
+
+        f.write("By Prop Type:\n")
+        for prop, stats in sorted(by_prop.items(), key=lambda x: -x[1]["hits"]/x[1]["total"] if x[1]["total"] > 0 else 0):
+            rate = 100 * stats["hits"] / stats["total"] if stats["total"] > 0 else 0
+            f.write(f"  {prop}: {stats['hits']}/{stats['total']} = {rate:.1f}%\n")
+
+        f.write("\nBy Direction:\n")
+        for d, stats in by_direction.items():
+            rate = 100 * stats["hits"] / stats["total"] if stats["total"] > 0 else 0
+            f.write(f"  {d}: {stats['hits']}/{stats['total']} = {rate:.1f}%\n")
+
+        f.write("\nBy Edge Level:\n")
+        for bucket in ["5-8%", "8-12%", "12%+"]:
+            if bucket in by_edge:
+                stats = by_edge[bucket]
+                rate = 100 * stats["hits"] / stats["total"] if stats["total"] > 0 else 0
+                f.write(f"  {bucket}: {stats['hits']}/{stats['total']} = {rate:.1f}%\n")
+
+        f.write("\nBy Usage Boost:\n")
+        for bucket in ["No boost", "Small (1-5%)", "Medium+ (5%+)"]:
+            if bucket in by_boost:
+                stats = by_boost[bucket]
+                rate = 100 * stats["hits"] / stats["total"] if stats["total"] > 0 else 0
+                f.write(f"  {bucket}: {stats['hits']}/{stats['total']} = {rate:.1f}%\n")
+
+        f.write("\n" + "=" * 80 + "\n")
+        f.write("SAMPLE PREDICTIONS (first 50)\n")
+        f.write("=" * 80 + "\n\n")
+
+        for p in all_predictions[:50]:
+            status = "✓ HIT" if p.get("hit") else "✗ MISS"
+            f.write(f"{p.get('game_date')} | {p.get('player')}\n")
+            f.write(f"  {p.get('pick')} {p.get('line')} {p.get('prop_type')}\n")
+            f.write(f"  Projected: {p.get('projected')} | Actual: {p.get('actual')} | {status}\n")
+            f.write(f"  Edge: {p.get('edge')}% | Boost: {p.get('usage_boost')}\n\n")
+
+    print(f"\nAll outputs saved:")
+    print(f"  - Summary: {output_file}")
+    print(f"  - Detailed report: {detailed_report}")
+    print(f"  - All predictions JSON: {predictions_file}")

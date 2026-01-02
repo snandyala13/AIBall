@@ -1,0 +1,46 @@
+{
+  "feature_cols": [
+    "probability",
+    "edge",
+    "confidence",
+    "diff_pct",
+    "line",
+    "is_over",
+    "prop_assists",
+    "prop_points",
+    "prop_pts_rebs_asts",
+    "prop_rebounds",
+    "prop_threes",
+    "line_percentile",
+    "edge_squared",
+    "prob_x_edge",
+    "edge_over_interaction",
+    "high_edge",
+    "mid_line"
+  ],
+  "training_samples": 17436,
+  "training_date": "2026-01-02T16:56:06.276269",
+  "base_hit_rate": 0.5411218169304887,
+  "model_scores": {
+    "gradient_boosting": 0.5501261757283781,
+    "random_forest": 0.5565496673548979,
+    "logistic_regression": 0.5572378986005965
+  },
+  "thresholds": {
+    "0.58": {
+      "count": 3644,
+      "hit_rate": 0.681119648737651
+    },
+    "0.60": {
+      "count": 1354,
+      "hit_rate": 0.7208271787296898
+    }
+  },
+  "prop_types": [
+    "assists",
+    "points",
+    "pts_rebs_asts",
+    "rebounds",
+    "threes"
+  ]
+}
