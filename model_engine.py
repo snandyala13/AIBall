@@ -556,6 +556,24 @@ class EdgeCalculator:
     Edge = Our probability - Implied probability from odds
     """
 
+    # Calibration factor for std_dev - backtest showed we're overconfident
+    # When we predicted 65%, actual hit rate was 50%
+    # Increasing std_dev widens the distribution toward 50%
+    STD_DEV_CALIBRATION = 2.0  # Multiply std_dev by this factor (increased from 1.6)
+
+    # Minimum std_dev by stat type (prevents overconfidence on "consistent" players)
+    # Increased floors based on backtest showing high confidence still underperforming
+    MIN_STD_DEV = {
+        "pts": 6.0,      # Points: raised floor (was 4.5)
+        "reb": 3.5,      # Rebounds (was 2.5)
+        "ast": 3.0,      # Assists (was 2.0)
+        "fg3m": 1.5,     # Threes (was 1.2)
+        "stl": 1.0,      # Steals (was 0.8)
+        "blk": 1.0,      # Blocks (was 0.8)
+        "turnover": 1.2, # Turnovers (was 1.0)
+        "pra": 9.0,      # PRA combined - higher floor (was 7.0)
+    }
+
     @staticmethod
     def american_to_prob(odds: int) -> float:
         """Convert American odds to implied probability"""
@@ -572,26 +590,50 @@ class EdgeCalculator:
         else:
             return int(100 * (1 - prob) / prob)
 
-    @staticmethod
+    @classmethod
     def calculate_over_probability(
+        cls,
         projection: float,
         line: float,
-        std_dev: float
+        std_dev: float,
+        stat_type: str = "pts"
     ) -> float:
         """
         Calculate probability of going OVER the line.
 
         Uses normal distribution with player's projection and variance.
         P(X > line) = 1 - CDF((line - projection) / std_dev)
+
+        CALIBRATION: Applies std_dev multiplier and minimum floors
+        to prevent overconfidence (backtest showed 65% predicted -> 50% actual)
         """
         if std_dev <= 0:
             return 0.55 if projection > line else 0.45
 
-        z_score = (line - projection) / std_dev
+        # Apply calibration: multiply std_dev to widen distribution
+        calibrated_std = std_dev * cls.STD_DEV_CALIBRATION
+
+        # Apply minimum floor based on stat type
+        min_std = cls.MIN_STD_DEV.get(stat_type, 3.0)
+        calibrated_std = max(calibrated_std, min_std)
+
+        z_score = (line - projection) / calibrated_std
         over_prob = 1 - scipy_stats.norm.cdf(z_score)
 
-        # Clamp to reasonable range
-        return max(0.05, min(0.95, over_prob))
+        # Aggressive damping: pull probabilities toward 55%
+        # Backtest showed 65%+ predictions hit at 41%, so we need strong damping
+        # Any probability over 60% gets pulled back hard
+        if over_prob > 0.60:
+            # Aggressive damping: limit how far above 60% we can go
+            # 70% -> 60 + (70-60)*0.3 = 63%
+            # 80% -> 60 + (80-60)*0.3 = 66%
+            over_prob = 0.60 + (over_prob - 0.60) * 0.3
+        elif over_prob < 0.40:
+            # Same aggressive damping on under side
+            over_prob = 0.40 - (0.40 - over_prob) * 0.3
+
+        # Clamp to realistic range - never claim > 68% or < 32%
+        return max(0.32, min(0.68, over_prob))
 
     def calculate_edge(
         self,
@@ -599,14 +641,15 @@ class EdgeCalculator:
         line: float,
         std_dev: float,
         over_odds: int,
-        under_odds: int
+        under_odds: int,
+        stat_type: str = "pts"
     ) -> Tuple[float, float, float, float]:
         """
         Calculate edge on over and under.
 
         Returns: (edge_over, edge_under, our_over_prob, our_under_prob)
         """
-        our_over_prob = self.calculate_over_probability(projection, line, std_dev)
+        our_over_prob = self.calculate_over_probability(projection, line, std_dev, stat_type)
         our_under_prob = 1 - our_over_prob
 
         implied_over = self.american_to_prob(over_odds)
@@ -816,6 +859,65 @@ class PopOffHunter:
 
         return scratched_avg * factor * usage_weight
 
+    def _get_position_group(self, position: str) -> str:
+        """
+        Map position to broader group for scarcity calculation.
+        Groups: BIG (C, PF), WING (SF, SG), GUARD (PG)
+        """
+        pos = position.upper() if position else "SF"
+        if pos in ["C", "PF"] or "C" in pos:
+            return "BIG"
+        elif pos in ["SF", "SG", "F"] or "F" in pos:
+            return "WING"
+        elif pos in ["PG", "G"]:
+            return "GUARD"
+        return "WING"  # Default
+
+    def _calculate_position_scarcity(
+        self,
+        active_players: List[PlayerProfile],
+        scratched_players: List[PlayerProfile],
+        team: str
+    ) -> Dict[str, float]:
+        """
+        Calculate scarcity multiplier for each position group on a team.
+
+        If 3 bigs are out and 1 is active, the active big gets 3x multiplier.
+        Returns: {position_group: scarcity_multiplier}
+        """
+        # Count by position group for this team
+        active_by_group = {"BIG": 0, "WING": 0, "GUARD": 0}
+        scratched_by_group = {"BIG": 0, "WING": 0, "GUARD": 0}
+
+        for p in active_players:
+            if p.team == team:
+                group = self._get_position_group(p.position)
+                active_by_group[group] += 1
+
+        for p in scratched_players:
+            if p.team == team:
+                group = self._get_position_group(p.position)
+                scratched_by_group[group] += 1
+
+        # Calculate scarcity multiplier
+        # More scratched + fewer active = higher multiplier
+        # Use sqrt for softer scaling - a player can only absorb so much
+        scarcity = {}
+        for group in ["BIG", "WING", "GUARD"]:
+            active = max(1, active_by_group[group])  # Avoid division by zero
+            scratched = scratched_by_group[group]
+
+            if scratched == 0:
+                scarcity[group] = 1.0
+            else:
+                # Softer formula using sqrt to avoid unrealistic projections
+                # e.g., 4 scratched, 1 active = 1 + sqrt(4/1) = 3.0x (was 5.0x)
+                # e.g., 2 scratched, 2 active = 1 + sqrt(2/2) = 2.0x (was 2.0x)
+                # Cap at 2.5x to stay realistic (one player can only do so much)
+                scarcity[group] = min(2.5, 1.0 + math.sqrt(scratched / active))
+
+        return scarcity
+
     def find_popoff_candidates(
         self,
         active_players: List[PlayerProfile],
@@ -830,10 +932,22 @@ class PopOffHunter:
         if prop_types is None:
             prop_types = [PropType.POINTS, PropType.REBOUNDS, PropType.ASSISTS, PropType.THREES, PropType.PRA]
 
+        # Pre-calculate position scarcity for each team
+        teams = set(p.team for p in active_players)
+        team_scarcity = {}
+        for team in teams:
+            team_scarcity[team] = self._calculate_position_scarcity(
+                active_players, scratched_players, team
+            )
+
         boosts = {}
 
         for active in active_players:
             player_boosts = {}
+
+            # Get position scarcity multiplier for this player
+            pos_group = self._get_position_group(active.position)
+            scarcity_mult = team_scarcity.get(active.team, {}).get(pos_group, 1.0)
 
             for scratched in scratched_players:
                 # Only same team
@@ -843,10 +957,29 @@ class PopOffHunter:
                 for prop_type in prop_types:
                     boost = self.calculate_usage_boost(active, scratched, prop_type)
                     if boost > 0:
-                        player_boosts[prop_type] = player_boosts.get(prop_type, 0) + boost
+                        # Apply position scarcity multiplier
+                        adjusted_boost = boost * scarcity_mult
+                        player_boosts[prop_type] = player_boosts.get(prop_type, 0) + adjusted_boost
 
             if player_boosts:
-                boosts[active.name] = player_boosts
+                # Cap boosts at realistic ceiling (player can only absorb so much)
+                # Max boost = player's season average for each stat
+                # This prevents 50+ point projections for bench players
+                capped_boosts = {}
+                for prop_type, boost_val in player_boosts.items():
+                    stat_key = STAT_MAPPING.get(prop_type)
+                    if stat_key:
+                        # Get player's baseline for this stat
+                        baseline = active.season_avg.get(stat_key, 0)
+                        if baseline == 0:
+                            baseline = active.last_10_avg.get(stat_key, 0)
+                        # Cap boost at 1.5x baseline (so 10 ppg player gets max +15 pts)
+                        max_boost = baseline * 1.5
+                        capped_boosts[prop_type] = min(boost_val, max_boost)
+                    else:
+                        capped_boosts[prop_type] = boost_val
+
+                boosts[active.name] = capped_boosts
 
         return boosts
 
@@ -950,13 +1083,19 @@ class ModelEngine:
         projection.dk_over_odds = prop.over_odds
         projection.dk_under_odds = prop.under_odds
 
+        # Determine stat_type for calibration
+        stat_type = STAT_MAPPING.get(projection.prop_type, "pts")
+        if projection.prop_type == PropType.PRA:
+            stat_type = "pra"
+
         # Calculate probabilities and edge
         edge_over, edge_under, our_over, our_under = self.edge_calculator.calculate_edge(
             projection.projected_value,
             prop.line,
             projection.std_dev,
             prop.over_odds,
-            prop.under_odds
+            prop.under_odds,
+            stat_type
         )
 
         projection.over_probability = round(our_over, 3)

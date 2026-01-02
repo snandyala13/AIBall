@@ -293,6 +293,11 @@ class BetGenerator:
     PARLAY_MIN_EDGE = 2.5       # 2.5% for parlays
     PARLAY_MIN_CORRELATION = 0.20
 
+    # Props to EXCLUDE from recommendations (poor backtest performance)
+    # Assists: 42.8% hit rate in backtest - terrible!
+    # Threes: 49.0% - below breakeven
+    EXCLUDED_PROPS = {"assists"}  # Add "threes" if you want to exclude them too
+
     # Bet limits
     MAX_SINGLES = 2             # Only top 2 singles
     MAX_SAFE_PARLAYS = 4        # 2-3 leg parlays
@@ -503,6 +508,10 @@ class BetGenerator:
             if proj.dk_line == 0:
                 continue
 
+            # Skip excluded prop types (poor backtest performance)
+            if proj.prop_type.value in self.EXCLUDED_PROPS:
+                continue
+
             # Skip pop-off plays (they go to tier 2)
             if proj.source_layer == "popoff":
                 continue
@@ -586,6 +595,10 @@ class BetGenerator:
             if proj.dk_line == 0:
                 continue
 
+            # Skip excluded prop types (poor backtest performance)
+            if proj.prop_type.value in self.EXCLUDED_PROPS:
+                continue
+
             # Pop-offs are always overs
             edge = proj.edge_over
             if edge < self.TIER_2_MIN_EDGE:
@@ -661,8 +674,8 @@ class BetGenerator:
             prob_a = proj_a.over_probability if side_a == "over" else proj_a.under_probability
             prob_b = proj_b.over_probability if side_b == "over" else proj_b.under_probability
 
-            # Skip if individual legs are bad
-            if prob_a < 0.45 or prob_b < 0.45:
+            # Skip if individual legs are bad (calibrated threshold)
+            if prob_a < 0.55 or prob_b < 0.55:
                 continue
 
             # Calculate parlay probabilities
@@ -802,6 +815,10 @@ class BetGenerator:
             if proj.dk_line == 0:
                 continue
 
+            # Skip excluded prop types (poor backtest performance)
+            if proj.prop_type.value in self.EXCLUDED_PROPS:
+                continue
+
             best_edge = max(proj.edge_over, proj.edge_under)
             if best_edge < 3.0:  # At least 3% edge for parlay legs
                 continue
@@ -809,7 +826,7 @@ class BetGenerator:
             side = "over" if proj.edge_over > proj.edge_under else "under"
             prob = proj.over_probability if side == "over" else proj.under_probability
 
-            if prob < 0.52:  # Need >52% probability for inclusion
+            if prob < 0.55:  # Need >55% probability for inclusion (calibrated threshold)
                 continue
 
             # Calculate quality score and player tier
@@ -820,7 +837,7 @@ class BetGenerator:
             viable_legs.append({
                 "proj": proj,
                 "side": side,
-                "prob": min(0.85, prob),  # Cap at 85% to be conservative
+                "prob": min(0.68, prob),  # Cap at 68% (calibrated max)
                 "edge": best_edge,
                 "odds": proj.dk_over_odds if side == "over" else proj.dk_under_odds,
                 "quality": quality_score,
@@ -843,172 +860,239 @@ class BetGenerator:
             key_rev = (pair.player_b, pair.prop_b, pair.player_a, pair.prop_a)
             corr_lookup[key_rev] = pair.correlation
 
-        # Generate parlays of DIFFERENT sizes for variety
-        # Small parlays (2-3 legs): safer, lower payout
-        # Medium parlays (4 legs): balanced
-        # Large parlays (5-6 legs): higher risk, higher payout
+        # Generate parlays with DIVERSITY - avoid same picks in every parlay
+        # Strategy: Track usage, create themed parlays, limit repetition
         parlay_sizes = [2, 3, 4, 5, 6] if len(viable_legs) >= 6 else list(range(min_legs, min(max_legs + 1, len(viable_legs) + 1)))
+
+        # Track how many times each leg is used across ALL parlays
+        leg_usage_count = {i: 0 for i in range(len(viable_legs))}
+        MAX_LEG_USAGE = 3  # Each leg can appear in max 3 parlays
+
+        # Group legs by stat type for themed parlays
+        pts_legs = [i for i, l in enumerate(viable_legs) if l["proj"].prop_type.value in ["points", "pra"]]
+        reb_legs = [i for i, l in enumerate(viable_legs) if l["proj"].prop_type.value in ["rebounds", "pra"]]
+        ast_legs = [i for i, l in enumerate(viable_legs) if l["proj"].prop_type.value in ["assists", "pra"]]
+        threes_legs = [i for i, l in enumerate(viable_legs) if l["proj"].prop_type.value == "threes"]
+        other_legs = [i for i, l in enumerate(viable_legs) if l["proj"].prop_type.value not in ["points", "rebounds", "assists", "pra", "threes"]]
+
+        def get_available_legs(preferred_indices=None, exclude_players=set()):
+            """Get legs sorted by quality, preferring less-used and preferred types"""
+            available = []
+            for i, leg in enumerate(viable_legs):
+                if leg["proj"].player_name in exclude_players:
+                    continue
+                if leg_usage_count[i] >= MAX_LEG_USAGE:
+                    continue
+                # Score: quality bonus - usage penalty + preference bonus
+                usage_penalty = leg_usage_count[i] * 0.3
+                pref_bonus = 0.2 if preferred_indices and i in preferred_indices else 0
+                score = leg["quality"] - usage_penalty + pref_bonus
+                available.append((i, leg, score))
+            available.sort(key=lambda x: x[2], reverse=True)
+            return available
+
+        def build_parlay_with_diversity(num_legs, theme=None, exclude_combos=set()):
+            """Build a single parlay with diversity preferences"""
+            preferred = None
+            if theme == "points":
+                preferred = set(pts_legs)
+            elif theme == "rebounds":
+                preferred = set(reb_legs)
+            elif theme == "assists":
+                preferred = set(ast_legs)
+            elif theme == "threes":
+                preferred = set(threes_legs)
+
+            available = get_available_legs(preferred)
+            if len(available) < num_legs:
+                return None
+
+            parlay_legs = []
+            used_players = set()
+            used_indices = []
+            has_star = False
+            all_bench = True
+
+            for idx, leg, score in available:
+                if len(parlay_legs) >= num_legs:
+                    break
+                player = leg["proj"].player_name
+                if player in used_players:
+                    continue
+
+                parlay_legs.append(leg)
+                used_players.add(player)
+                used_indices.append(idx)
+
+                if leg["tier"] == PlayerTier.STAR:
+                    has_star = True
+                    all_bench = False
+                elif leg["tier"] == PlayerTier.ROTATION:
+                    all_bench = False
+
+            if len(parlay_legs) < num_legs:
+                return None
+
+            # Skip all-bench parlays for 4+ legs (too risky)
+            if all_bench and num_legs >= 4:
+                return None
+
+            # For 5+ leg parlays, require at least 1 star or rotation player
+            if num_legs >= 5 and all_bench:
+                return None
+
+            # Create a signature to detect duplicate parlays
+            sig = frozenset((l["proj"].player_name, l["proj"].prop_type.value, l["side"]) for l in parlay_legs)
+            if sig in exclude_combos:
+                return None
+
+            # Mark these legs as used
+            for idx in used_indices:
+                leg_usage_count[idx] += 1
+
+            return parlay_legs, sig
+
+        # Build parlays with variety
+        parlay_signatures = set()
 
         for num_legs in parlay_sizes:
             if len(viable_legs) < num_legs:
                 continue
 
-            # Build 2-3 parlays of each size with tier mixing
-            for start_idx in range(min(3, len(viable_legs) - num_legs + 1)):
-                parlay_legs = [viable_legs[start_idx]]
-                used_players = {viable_legs[start_idx]["proj"].player_name}
+            # For each size, try different themes to get variety
+            # Note: "assists" removed from themes due to poor backtest performance (42.8%)
+            themes = [None, "points", "rebounds", "threes", "pra"] if num_legs <= 3 else [None, "points", "rebounds", "threes"]
+            parlays_this_size = 0
+            max_per_size = 4  # Max 4 parlays per size
 
-                # Track tier mix for this parlay
-                has_star = viable_legs[start_idx]["tier"] == PlayerTier.STAR
-                all_bench = viable_legs[start_idx]["tier"] == PlayerTier.BENCH
+            for theme in themes:
+                if parlays_this_size >= max_per_size:
+                    break
 
-                # Add remaining legs, prioritizing different players and tier balance
-                for leg in viable_legs[start_idx + 1:]:
-                    if len(parlay_legs) >= num_legs:
+                # Try to build 2 parlays per theme for more variety
+                for attempt in range(2):
+                    if parlays_this_size >= max_per_size:
                         break
-                    player = leg["proj"].player_name
-                    if player in used_players:
+
+                    result = build_parlay_with_diversity(num_legs, theme, parlay_signatures)
+                    if result is None:
+                        break  # No more valid parlays for this theme
+
+                    parlay_legs, sig = result
+                    parlay_signatures.add(sig)
+                    parlays_this_size += 1
+
+                    # Track tier mix
+                    has_star = any(l["tier"] == PlayerTier.STAR for l in parlay_legs)
+                    all_bench = all(l["tier"] == PlayerTier.BENCH for l in parlay_legs)
+
+                    # Calculate OUR probability (conservative - multiply and reduce slightly)
+                    probs = [leg["prob"] for leg in parlay_legs]
+                    naive_prob = 1.0
+                    for p in probs:
+                        naive_prob *= p
+
+                    # Small correlation adjustment (only ~1% boost per correlated pair)
+                    avg_corr = 0.0
+                    corr_count = 0
+                    for i in range(len(parlay_legs)):
+                        for j in range(i + 1, len(parlay_legs)):
+                            key = (
+                                parlay_legs[i]["proj"].player_name,
+                                parlay_legs[i]["proj"].prop_type,
+                                parlay_legs[j]["proj"].player_name,
+                                parlay_legs[j]["proj"].prop_type
+                            )
+                            if key in corr_lookup:
+                                avg_corr += abs(corr_lookup[key])
+                                corr_count += 1
+                    if corr_count > 0:
+                        avg_corr /= corr_count
+
+                    # Conservative correlation boost (max 3% total)
+                    corr_boost = min(0.03, avg_corr * 0.01 * num_legs)
+                    true_prob = naive_prob + corr_boost
+
+                    # Calculate DK parlay odds
+                    combined_decimal = 1.0
+                    for leg in parlay_legs:
+                        decimal_odds = self.kelly.american_to_decimal(leg["odds"])
+                        combined_decimal *= decimal_odds
+
+                    # DK adds juice to parlays
+                    juice = self.sgp.estimate_dk_juice(num_legs)
+                    combined_decimal *= (1 - juice)
+
+                    if combined_decimal >= 2:
+                        combined_dk_odds = int((combined_decimal - 1) * 100)
+                    else:
+                        combined_dk_odds = int(-100 / (combined_decimal - 1)) if combined_decimal > 1 else -200
+
+                    # Calculate DK implied probability
+                    dk_implied = 1 / combined_decimal if combined_decimal > 0 else 1
+
+                    # Edge = our probability minus DK implied
+                    edge = (true_prob - dk_implied) * 100
+
+                    # Require meaningful edge (at least 3% for parlays)
+                    if edge < 3.0:
                         continue
 
-                    parlay_legs.append(leg)
-                    used_players.add(player)
+                    # Risk level based on TRUE hit probability
+                    if true_prob >= 0.40:
+                        risk_level = "LOW"
+                    elif true_prob >= 0.25:
+                        risk_level = "MEDIUM"
+                    else:
+                        risk_level = "HIGH"
 
-                    # Update tier tracking
-                    if leg["tier"] == PlayerTier.STAR:
-                        has_star = True
-                        all_bench = False
-                    elif leg["tier"] == PlayerTier.ROTATION:
-                        all_bench = False
+                    # Calculate Kelly (capped for parlays)
+                    units = self.kelly.calculate_units(true_prob, combined_dk_odds, is_parlay=True)
+                    ev = self.kelly.calculate_ev(true_prob, combined_dk_odds)
 
-                if len(parlay_legs) < num_legs:
-                    continue
+                    # Build leg Bet objects with tier and reasoning
+                    bet_legs = []
+                    for leg in parlay_legs:
+                        proj = leg["proj"]
+                        prop_name = self._get_prop_name(proj.prop_type)
+                        bet_legs.append(Bet(
+                            tier=BetTier.CORRELATED_PARLAY,
+                            description=f"{proj.player_name} {leg['side'].upper()} {proj.dk_line} {prop_name}",
+                            player=proj.player_name,
+                            prop_type=proj.prop_type.value,
+                            side=leg["side"],
+                            line=proj.dk_line,
+                            dk_odds=leg["odds"],
+                            fair_odds=self.sgp.probability_to_american(leg["prob"]),
+                            edge_percent=round(leg["edge"], 2),
+                            confidence=proj.confidence,
+                            recommended_units=0,
+                            ev_per_unit=0,
+                            reasoning=leg["reasoning"],
+                            projected_value=proj.projected_value,
+                            our_probability=round(leg["prob"], 3),
+                            implied_probability=0,
+                            player_tier=leg["tier"],
+                            minutes_avg=proj.projected_minutes,
+                            reasoning_factors=leg["reasoning_factors"]
+                        ))
 
-                # TIER MIXING RULE: For 3+ leg parlays, require at least 1 star
-                # Skip parlays that are all bench players
-                if num_legs >= 3 and not has_star:
-                    # Try to find a star player to swap in
-                    star_legs = [l for l in viable_legs if l["tier"] == PlayerTier.STAR
-                                 and l["proj"].player_name not in used_players]
-                    if star_legs and len(parlay_legs) >= 3:
-                        # Replace lowest quality leg with a star
-                        parlay_legs.sort(key=lambda x: x["quality"])
-                        old_leg = parlay_legs[0]
-                        used_players.remove(old_leg["proj"].player_name)
-                        parlay_legs[0] = star_legs[0]
-                        used_players.add(star_legs[0]["proj"].player_name)
-                        has_star = True
-
-                # Skip all-bench parlays (too risky, variance too high)
-                if all_bench:
-                    continue
-
-                # Calculate OUR probability (conservative - multiply and reduce slightly)
-                probs = [leg["prob"] for leg in parlay_legs]
-                naive_prob = 1.0
-                for p in probs:
-                    naive_prob *= p
-
-                # Small correlation adjustment (only ~1% boost per correlated pair)
-                avg_corr = 0.0
-                corr_count = 0
-                for i in range(len(parlay_legs)):
-                    for j in range(i + 1, len(parlay_legs)):
-                        key = (
-                            parlay_legs[i]["proj"].player_name,
-                            parlay_legs[i]["proj"].prop_type,
-                            parlay_legs[j]["proj"].player_name,
-                            parlay_legs[j]["proj"].prop_type
-                        )
-                        if key in corr_lookup:
-                            avg_corr += abs(corr_lookup[key])
-                            corr_count += 1
-                if corr_count > 0:
-                    avg_corr /= corr_count
-
-                # Conservative correlation boost (max 3% total)
-                corr_boost = min(0.03, avg_corr * 0.01 * num_legs)
-                true_prob = naive_prob + corr_boost
-
-                # Calculate DK parlay odds
-                combined_decimal = 1.0
-                for leg in parlay_legs:
-                    decimal_odds = self.kelly.american_to_decimal(leg["odds"])
-                    combined_decimal *= decimal_odds
-
-                # DK adds juice to parlays
-                juice = self.sgp.estimate_dk_juice(num_legs)
-                combined_decimal *= (1 - juice)
-
-                if combined_decimal >= 2:
-                    combined_dk_odds = int((combined_decimal - 1) * 100)
-                else:
-                    combined_dk_odds = int(-100 / (combined_decimal - 1)) if combined_decimal > 1 else -200
-
-                # Calculate DK implied probability
-                dk_implied = 1 / combined_decimal if combined_decimal > 0 else 1
-
-                # Edge = our probability minus DK implied
-                edge = (true_prob - dk_implied) * 100
-
-                # Require meaningful edge (at least 3% for parlays)
-                if edge < 3.0:
-                    continue
-
-                # Risk level based on TRUE hit probability
-                if true_prob >= 0.40:
-                    risk_level = "LOW"
-                elif true_prob >= 0.25:
-                    risk_level = "MEDIUM"
-                else:
-                    risk_level = "HIGH"
-
-                # Calculate Kelly (capped for parlays)
-                units = self.kelly.calculate_units(true_prob, combined_dk_odds, is_parlay=True)
-                ev = self.kelly.calculate_ev(true_prob, combined_dk_odds)
-
-                # Build leg Bet objects with tier and reasoning
-                bet_legs = []
-                for leg in parlay_legs:
-                    proj = leg["proj"]
-                    prop_name = self._get_prop_name(proj.prop_type)
-                    bet_legs.append(Bet(
+                    parlay = ParlayBet(
                         tier=BetTier.CORRELATED_PARLAY,
-                        description=f"{proj.player_name} {leg['side'].upper()} {proj.dk_line} {prop_name}",
-                        player=proj.player_name,
-                        prop_type=proj.prop_type.value,
-                        side=leg["side"],
-                        line=proj.dk_line,
-                        dk_odds=leg["odds"],
-                        fair_odds=self.sgp.probability_to_american(leg["prob"]),
-                        edge_percent=round(leg["edge"], 2),
-                        confidence=proj.confidence,
-                        recommended_units=0,
-                        ev_per_unit=0,
-                        reasoning=leg["reasoning"],
-                        projected_value=proj.projected_value,
-                        our_probability=round(leg["prob"], 3),
-                        implied_probability=0,
-                        player_tier=leg["tier"],
-                        minutes_avg=proj.projected_minutes,
-                        reasoning_factors=leg["reasoning_factors"]
-                    ))
-
-                parlay = ParlayBet(
-                    tier=BetTier.CORRELATED_PARLAY,
-                    legs=bet_legs,
-                    combined_dk_odds=combined_dk_odds,
-                    true_fair_odds=self.sgp.probability_to_american(true_prob),
-                    naive_fair_odds=self.sgp.probability_to_american(naive_prob),
-                    edge_percent=round(edge, 2),
-                    recommended_units=units,
-                    ev_per_unit=ev,
-                    correlation=avg_corr,
-                    true_probability=round(true_prob, 3),
-                    naive_probability=round(naive_prob, 3),
-                    reasoning=f"{num_legs}-leg parlay | Risk: {risk_level} | "
-                             f"True prob {true_prob*100:.1f}% vs implied {dk_implied*100:.1f}%"
-                )
-                multi_parlays.append(parlay)
+                        legs=bet_legs,
+                        combined_dk_odds=combined_dk_odds,
+                        true_fair_odds=self.sgp.probability_to_american(true_prob),
+                        naive_fair_odds=self.sgp.probability_to_american(naive_prob),
+                        edge_percent=round(edge, 2),
+                        recommended_units=units,
+                        ev_per_unit=ev,
+                        correlation=avg_corr,
+                        true_probability=round(true_prob, 3),
+                        naive_probability=round(naive_prob, 3),
+                        reasoning=f"{num_legs}-leg parlay | Risk: {risk_level} | "
+                                 f"True prob {true_prob*100:.1f}% vs implied {dk_implied*100:.1f}%"
+                    )
+                    multi_parlays.append(parlay)
 
         # Remove duplicates (same legs in different order)
         seen = set()

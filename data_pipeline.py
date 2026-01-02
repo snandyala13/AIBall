@@ -8,6 +8,8 @@ Uses Balldontlie GOAT API for:
 - Injury reports
 - Team schedules (for back-to-back detection)
 - Box scores and pace data
+
+Now with SQLite caching for faster performance!
 """
 
 import os
@@ -17,6 +19,14 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import requests
 import numpy as np
+
+# Import cache (optional - will work without it)
+try:
+    from cache_db import get_cache, CacheDB
+    CACHE_ENABLED = True
+except ImportError:
+    CACHE_ENABLED = False
+    get_cache = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -229,11 +239,26 @@ class BallDontLieClient:
     # Player Data
     # -------------------------------------------------------------------------
 
+    def _cache_player_result(self, player: Dict, search_name: str):
+        """Cache a player search result"""
+        if CACHE_ENABLED and player:
+            cache = get_cache()
+            player_id = player.get("id")
+            if player_id:
+                cache.set_player(player_id, player, search_name)
+
     def search_player(self, name: str) -> Optional[Dict]:
-        """Search for a player by name"""
+        """Search for a player by name (with SQLite caching)"""
         original_name = name.strip()
         search_name_lower = original_name.lower()
         parts = original_name.split()
+
+        # Check SQLite cache first
+        if CACHE_ENABLED:
+            cache = get_cache()
+            cached = cache.get_player_by_name(original_name)
+            if cached is not None:
+                return cached
 
         # Try full name first
         data = self._make_request("players", {"search": original_name})
@@ -337,7 +362,16 @@ class BallDontLieClient:
         season: int = 2025,
         last_n: int = 20
     ) -> List[Dict]:
-        """Fetch recent game logs for a player"""
+        """Fetch recent game logs for a player (with SQLite caching)"""
+        # Check SQLite cache first
+        if CACHE_ENABLED:
+            cache = get_cache()
+            cached_count = cache.get_game_logs_count(player_id)
+            if cached_count >= last_n:
+                cached_logs = cache.get_game_logs(player_id, last_n)
+                if cached_logs:
+                    return cached_logs
+
         # Request more games to ensure we get recent ones (API returns oldest first)
         data = self._make_request("stats", {
             "player_ids[]": player_id,
@@ -351,16 +385,35 @@ class BallDontLieClient:
         # Sort by date descending to get most recent games
         logs = data["data"]
         logs.sort(key=lambda x: x.get("game", {}).get("date", ""), reverse=True)
-        return logs[:last_n]
+        result = logs[:last_n]
+
+        # Cache the game logs
+        if CACHE_ENABLED and result:
+            cache = get_cache()
+            cache.set_game_logs(player_id, logs)  # Cache all logs, not just last_n
+
+        return result
 
     def get_season_averages(self, player_id: int, season: int = 2025) -> Optional[Dict]:
-        """Get season averages for a player"""
+        """Get season averages for a player (with SQLite caching)"""
+        # Check SQLite cache first
+        if CACHE_ENABLED:
+            cache = get_cache()
+            cached = cache.get_season_average(player_id, season)
+            if cached is not None:
+                return cached
+
         data = self._make_request("season_averages", {
             "season": season,
             "player_id": player_id  # API uses singular player_id, not player_ids[]
         })
         if data and data.get("data"):
-            return data["data"][0]
+            result = data["data"][0]
+            # Cache the result
+            if CACHE_ENABLED:
+                cache = get_cache()
+                cache.set_season_average(player_id, result, season)
+            return result
         return None
 
     def get_usage_stats(self, player_id: int, season: int = 2025) -> Optional[Dict]:
@@ -430,12 +483,26 @@ class BallDontLieClient:
     # -------------------------------------------------------------------------
 
     def get_injuries(self, team_id: int = None) -> List[Dict]:
-        """Get current injury report"""
+        """Get current injury report (with SQLite caching)"""
+        # Check SQLite cache first
+        if CACHE_ENABLED and team_id:
+            cache = get_cache()
+            cached = cache.get_injuries(team_id)
+            if cached is not None:
+                return cached
+
         params = {}
         if team_id:
             params["team_ids[]"] = team_id
         data = self._make_request("player_injuries", params)
-        return data.get("data", []) if data else []
+        result = data.get("data", []) if data else []
+
+        # Cache the result
+        if CACHE_ENABLED and team_id and result:
+            cache = get_cache()
+            cache.set_injuries(team_id, result)
+
+        return result
 
     # -------------------------------------------------------------------------
     # Live DraftKings Props (GOAT feature)
@@ -603,6 +670,9 @@ class DataPipeline:
 
         player_id = player_data["id"]
 
+        # Cache player data for future lookups
+        self.client._cache_player_result(player_data, player_name)
+
         # Check cache
         if player_id in self._player_cache:
             return self._player_cache[player_id]
@@ -759,7 +829,9 @@ class DataPipeline:
             stats["turnover"].append(log.turnover)
             stats["min"].append(log.minutes)
 
-        return {k: round(float(np.std(v)), 2) for k, v in stats.items() if v}
+        # Use sample std_dev (ddof=1) for unbiased estimate
+        # Population std (ddof=0) underestimates true variance
+        return {k: round(float(np.std(v, ddof=1)), 2) for k, v in stats.items() if len(v) > 1}
 
     def _calculate_per_minute(self, logs: List[GameLog]) -> Dict[str, float]:
         """Calculate per-minute rates"""
