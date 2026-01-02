@@ -91,6 +91,7 @@ class Projection:
     confidence: float  # 0-1
 
     # Market data
+    team: str = ""  # Player's team (for parlay correlation)
     dk_line: float = 0.0
     dk_over_odds: int = -110
     dk_under_odds: int = -110
@@ -1120,6 +1121,7 @@ class ModelEngine:
         proj = Projection(
             player_name=profile.name,
             prop_type=prop_type,
+            team=profile.team,  # For parlay correlation tracking
             projected_value=round(projected_value, 2),
             projected_minutes=round(proj_minutes, 1),
             std_dev=round(std_dev, 2),

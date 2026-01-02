@@ -678,6 +678,19 @@ class BetGenerator:
             if prob_a < 0.55 or prob_b < 0.55:
                 continue
 
+            # SAME-TEAM SCORING CONSTRAINT
+            # Don't pair two OVER scoring props from the same team
+            SCORING_PROPS = {"points", "pts_rebs_asts"}
+            both_over_scoring = (
+                side_a == "over" and side_b == "over" and
+                proj_a.prop_type.value in SCORING_PROPS and
+                proj_b.prop_type.value in SCORING_PROPS and
+                proj_a.team and proj_b.team and
+                proj_a.team == proj_b.team
+            )
+            if both_over_scoring:
+                continue  # Skip - unrealistic to bet OVER points on two same-team players
+
             # Calculate parlay probabilities
             naive_prob = self.sgp.calculate_naive_probability([prob_a, prob_b])
             true_prob = self.sgp.calculate_true_parlay_probability(
@@ -892,7 +905,13 @@ class BetGenerator:
             return available
 
         def build_parlay_with_diversity(num_legs, theme=None, exclude_combos=set()):
-            """Build a single parlay with diversity preferences"""
+            """Build a single parlay with diversity preferences
+
+            KEY CONSTRAINT: Avoid same-team scoring stacking
+            - Only 1 OVER points/PRA pick per team
+            - Prevents unrealistic parlays like "4 Kings players all go OVER on points"
+            - Cross-stat (rebounds, assists) or cross-team is fine
+            """
             preferred = None
             if theme == "points":
                 preferred = set(pts_legs)
@@ -913,12 +932,30 @@ class BetGenerator:
             has_star = False
             all_bench = True
 
+            # Track teams with OVER scoring picks (points, PRA)
+            # Only allow 1 OVER scoring pick per team
+            teams_with_over_scoring = set()
+            SCORING_PROPS = {"points", "pts_rebs_asts"}
+
             for idx, leg, score in available:
                 if len(parlay_legs) >= num_legs:
                     break
+
                 player = leg["proj"].player_name
                 if player in used_players:
                     continue
+
+                # Check same-team scoring constraint
+                prop_type = leg["proj"].prop_type.value
+                is_over = leg["side"] == "over"
+                is_scoring_prop = prop_type in SCORING_PROPS
+                team = leg["proj"].team
+
+                if is_over and is_scoring_prop and team:
+                    if team in teams_with_over_scoring:
+                        # Skip - already have OVER scoring pick from this team
+                        continue
+                    teams_with_over_scoring.add(team)
 
                 parlay_legs.append(leg)
                 used_players.add(player)
