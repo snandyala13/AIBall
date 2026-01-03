@@ -4,40 +4,50 @@ A statistical NBA player prop betting model with **ML ensemble filtering** that 
 
 ## Performance
 
-### ML-Filtered Picks (Recommended)
+### Full Backtest Results (34,697 predictions)
 
-| ML Threshold | Hit Rate | Sample Size |
-|--------------|----------|-------------|
-| **ML >= 60%** | **87.5%** | 72 picks |
-| **ML >= 58%** | **79.5%** | 200 picks |
-| **ML >= 55%** | **75.2%** | 476 picks |
+Tested across **1,727 NBA games** from October 2024 - January 2026.
 
-*Based on most recent week of backtesting (Dec 25 - Jan 1)*
+| ML Threshold | Picks | Hit Rate | Edge vs 50% | Simulated ROI |
+|--------------|-------|----------|-------------|---------------|
+| Baseline (all) | 34,697 | 52.5% | +2.5% | ~0% |
+| **ML >= 50%** | 23,709 | **55.2%** | +5.2% | **+3.5%** |
+| **ML >= 55%** | 6,613 | **59.8%** | +9.8% | **+7.6%** |
+| **ML >= 58%** | 1,305 | **63.5%** | +13.5% | **+10.1%** |
+| **ML >= 60%** | 402 | **66.9%** | +16.9% | **+13.4%** |
+| ML >= 62% | 89 | 78.7% | +28.7% | ~25% |
+| ML >= 65% | 27 | 81.5% | +31.5% | ~28% |
 
-### Full Backtest (17,436 predictions)
+*Tested against real historical lines from The Odds API (DraftKings/FanDuel), not simulated data.*
 
-| Metric | Result |
-|--------|--------|
-| **Base Model Hit Rate** | 54.1% |
-| **ML-Filtered (>=58%)** | 68.1% |
-| **ML-Filtered (>=60%)** | 72.1% |
-| **Breakeven Threshold** | 52.4% |
+### Simulated Betting Performance
 
-*Tested against real historical lines from The Odds API, not simulated data.*
+$100 flat bets at ML >= 55% threshold:
+- **6,613 picks** over 14 months
+- **$661,300 wagered**
+- **+$50,515 profit**
+- **+7.6% ROI**
 
-### Live Performance (Jan 1, 2026)
+### Performance by Prop Type (ML >= 55%)
 
-| ML Threshold | Hit Rate | Sample Size | ROI |
-|--------------|----------|-------------|-----|
-| **ML >= 60%** | **100%** | 2 picks | +90.9% |
-| **ML >= 58%** | **85.7%** | 14 picks | +63.6% |
+| Prop Type | Picks | Hit Rate |
+|-----------|-------|----------|
+| **Threes** | 851 | **63.7%** |
+| **Rebounds** | 1,467 | **60.7%** |
+| Points | 1,617 | 59.1% |
+| Assists | 1,095 | 58.5% |
+| PRA | 1,583 | 58.4% |
 
-Top picks that hit:
-- Svi Mykhailiuk PRA UNDER 15.5 (ML: 61.1%) - Actual: 8
-- Taylor Hendricks REB UNDER 5.5 (ML: 61.0%) - Actual: 2
-- VJ Edgecombe PTS OVER 14.5 (ML: 58.7%) - Actual: 23
+### Monthly Trend (ML >= 55%)
 
-*See `outputs/yesterday_report_20260101.txt` for full breakdown.*
+| Period | Hit Rate | Notes |
+|--------|----------|-------|
+| Oct-Dec 2024 | 57.5% | Early season |
+| Jan-Apr 2025 | 58.0% | Regular season |
+| Oct-Nov 2025 | 62.2% | Current season |
+| **Dec 2025** | **74.3%** | Model improvements |
+
+*See [ML_PERFORMANCE_REPORT.md](ML_PERFORMANCE_REPORT.md) for detailed analysis.*
 
 ## How It Works
 
@@ -121,25 +131,27 @@ ml_probability = (gb_prob + rf_prob + lr_prob) / 3
 ```
 
 **What the ML Learned:**
-- High edge (15%+) actually underperforms → applies penalty
-- Threes have 49.8% hit rate → heavily penalized
-- UNDERs outperform OVERs → slight boost
-- Mid-range lines (15-35) hit best → prioritized
-- PRA (combined stats) most reliable → slight boost
+- Base probability is the strongest signal (29% importance)
+- Difference from line matters more than raw edge (22% importance)
+- Probability × Edge interaction captures quality picks (19% importance)
+- Threes actually perform best at 63.7% when ML-filtered
+- UNDERs and OVERs perform equally well (~60%) when filtered
+- Higher edge tiers (15%+) hit at 63-68% when combined with ML filter
 
 ### 5. Pick Selection (`bet_generator.py`)
 
 Final filtering based on ML probability:
 
-| Tier | ML Threshold | Expected Hit Rate | Action |
-|------|--------------|-------------------|--------|
-| ELITE | >= 60% | ~72% | Include in all parlays |
-| HIGH | >= 58% | ~68% | Include in recommendations |
-| STANDARD | < 58% | ~54% | Filter out |
+| Tier | ML Threshold | Expected Hit Rate | Daily Volume | Action |
+|------|--------------|-------------------|--------------|--------|
+| ELITE | >= 60% | ~67% | ~1/day | Include in all parlays |
+| HIGH | >= 58% | ~64% | ~3/day | Include in recommendations |
+| STANDARD | >= 55% | ~60% | ~15/day | Daily betting volume |
+| FILTERED | < 55% | ~53% | — | Filter out |
 
 **Parlay Construction:**
-- HIGH-CONFIDENCE: 2-leg parlays using only ELITE/HIGH picks
-- Expected parlay hit rate: 0.72 × 0.72 = 51.8% (profitable at +300 odds)
+- HIGH-CONFIDENCE: 2-leg parlays using ELITE/HIGH picks (ML >= 58%)
+- Expected parlay hit rate: 0.64 × 0.64 = 41% (profitable at +300 odds, breakeven ~25%)
 
 ## Installation
 
@@ -202,21 +214,24 @@ python fetch_historical_odds.py --api-key YOUR_KEY --days 30
 
 ```
 aiBall/
-├── ball.py                  # Main entry point
-├── data_pipeline.py         # API data fetching and player/team profiles
-├── model_engine.py          # Statistical projections and adjustments
-├── bet_generator.py         # Pick generation with ML filtering
-├── ml_filter.py             # ML ensemble filter module (NEW)
-├── cache_db.py              # SQLite caching and historical odds storage
-├── fetch_historical_odds.py # Fetch real lines from The Odds API
-├── backtest_real_lines.py   # Backtest against real historical lines
-├── models/                  # Trained ML models (NEW)
+├── ball.py                    # Main entry point
+├── data_pipeline.py           # API data fetching and player/team profiles
+├── model_engine.py            # Statistical projections and adjustments
+├── bet_generator.py           # Pick generation with ML filtering
+├── ml_filter.py               # ML ensemble filter module
+├── train_ml_model.py          # ML ensemble training with time-based CV
+├── analyze_yesterday.py       # Analyze previous day's performance
+├── backtest_real_lines.py     # Backtest against real historical lines
+├── cache_db.py                # SQLite caching and historical odds storage
+├── fetch_historical_odds.py   # Fetch real lines from The Odds API
+├── ML_PERFORMANCE_REPORT.md   # Detailed ML filter analysis
+├── models/                    # Trained ML models
 │   ├── gradient_boosting.joblib
 │   ├── random_forest.joblib
 │   ├── logistic_regression.joblib
 │   ├── scaler.joblib
 │   └── ensemble_metadata.json
-└── outputs/                 # Generated reports and analysis
+└── outputs/                   # Generated reports and analysis
 ```
 
 ## Configuration
@@ -228,9 +243,10 @@ EdgeCalculator.STD_DEV_CALIBRATION = 2.0  # Widens probability distribution
 PopOffHunter.POPOFF_THRESHOLD = 0.15      # Max 15% injury boost
 # Time-decay: Full boost within 3 games, 0% after 21+ games out
 
-# bet_generator.py
-ML_HIGH_THRESHOLD = 0.58   # 68% expected hit rate
-ML_ELITE_THRESHOLD = 0.60  # 72% expected hit rate
+# bet_generator.py / ml_filter.py
+ML_STANDARD_THRESHOLD = 0.55  # 60% expected hit rate, ~15 picks/day
+ML_HIGH_THRESHOLD = 0.58      # 64% expected hit rate, ~3 picks/day
+ML_ELITE_THRESHOLD = 0.60     # 67% expected hit rate, ~1 pick/day
 ```
 
 ### Retraining the ML Model
@@ -241,8 +257,11 @@ After running a new backtest with more data:
 # 1. Run backtest to generate predictions
 python backtest_real_lines.py
 
-# 2. Retrain (script coming soon)
-python train_ml_filter.py --input outputs/backtest_predictions.json
+# 2. Retrain ensemble models (uses latest backtest_predictions file)
+python train_ml_model.py
+
+# 3. Or specify a specific predictions file
+python train_ml_model.py --predictions outputs/backtest_predictions_20260103.json
 ```
 
 ## Data Sources
@@ -253,10 +272,11 @@ python train_ml_filter.py --input outputs/backtest_predictions.json
 
 ## Current Database Stats
 
-- **Games**: 1,721
-- **Props**: 673,219
+- **Games Backtested**: 1,727
+- **Predictions Analyzed**: 34,697
+- **Props in Cache**: 673,219+
 - **Date Range**: Oct 22, 2024 - Jan 2, 2026
-- **ML Training Samples**: 17,436
+- **ML Training Samples**: 34,697 (time-split validation)
 
 ## Disclaimer
 
