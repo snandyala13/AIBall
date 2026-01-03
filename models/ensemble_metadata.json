@@ -1,4 +1,9 @@
 {
+  "training_date": "2026-01-03T05:38:29.890047",
+  "training_samples": 28535,
+  "test_samples": 3118,
+  "base_hit_rate": 0.51182758016471,
+  "test_hit_rate": 0.6254008980115459,
   "feature_cols": [
     "probability",
     "edge",
@@ -11,36 +16,29 @@
     "prop_pts_rebs_asts",
     "prop_rebounds",
     "prop_threes",
-    "line_percentile",
     "edge_squared",
     "prob_x_edge",
     "edge_over_interaction",
     "high_edge",
-    "mid_line"
+    "mid_line",
+    "line_percentile"
   ],
-  "training_samples": 17436,
-  "training_date": "2026-01-02T16:56:06.276269",
-  "base_hit_rate": 0.5411218169304887,
-  "model_scores": {
-    "gradient_boosting": 0.5501261757283781,
-    "random_forest": 0.5565496673548979,
-    "logistic_regression": 0.5572378986005965
-  },
-  "thresholds": {
-    "0.58": {
-      "count": 3644,
-      "hit_rate": 0.681119648737651
-    },
-    "0.60": {
-      "count": 1354,
-      "hit_rate": 0.7208271787296898
-    }
-  },
   "prop_types": [
     "assists",
     "points",
     "pts_rebs_asts",
     "rebounds",
     "threes"
-  ]
+  ],
+  "model_scores": {
+    "gradient_boosting": 0.5596536241180243,
+    "random_forest": 0.5782552918537524,
+    "logistic_regression": 0.572482360487492
+  },
+  "split_info": {
+    "train_start": "2024-10-22 00:00:00",
+    "train_end": "2025-12-01 00:00:00",
+    "test_start": "2025-12-02 00:00:00",
+    "test_end": "2026-01-01 00:00:00"
+  }
 }

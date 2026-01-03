@@ -82,6 +82,7 @@ class PlayerProfile:
     season_avg: Dict[str, float] = field(default_factory=dict)
 
     # Rolling averages
+    last_3_avg: Dict[str, float] = field(default_factory=dict)
     last_5_avg: Dict[str, float] = field(default_factory=dict)
     last_10_avg: Dict[str, float] = field(default_factory=dict)
 
@@ -94,9 +95,16 @@ class PlayerProfile:
     # Usage data
     usage_pct: float = 0.0
 
-    # Home/Away splits
+    # Home/Away splits (full sample)
     home_avg: Dict[str, float] = field(default_factory=dict)
     away_avg: Dict[str, float] = field(default_factory=dict)
+
+    # Home/Away L5 splits (more recent)
+    home_l5_avg: Dict[str, float] = field(default_factory=dict)
+    away_l5_avg: Dict[str, float] = field(default_factory=dict)
+
+    # Opponent-specific history: {opponent_id: {stat_key: avg, "games": count}}
+    opponent_history: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     # Raw game logs for correlation
     game_logs: List[GameLog] = field(default_factory=list)
@@ -743,6 +751,7 @@ class DataPipeline:
         played_games = [g for g in game_logs if g.minutes > 0]
 
         # Calculate rolling averages (only games where player actually played)
+        profile.last_3_avg = self._calculate_averages(played_games[:3])
         profile.last_5_avg = self._calculate_averages(played_games[:5])
         profile.last_10_avg = self._calculate_averages(played_games[:10])
 
@@ -757,6 +766,13 @@ class DataPipeline:
         away_games = [g for g in played_games if not g.home]
         profile.home_avg = self._calculate_averages(home_games[:10])
         profile.away_avg = self._calculate_averages(away_games[:10])
+
+        # Calculate home/away L5 splits (more recent)
+        profile.home_l5_avg = self._calculate_averages(home_games[:5])
+        profile.away_l5_avg = self._calculate_averages(away_games[:5])
+
+        # Calculate opponent-specific history (all played games)
+        profile.opponent_history = self._calculate_opponent_history(played_games)
 
         # Get season averages
         season_avg = self.client.get_season_averages(player_id, self.current_season)
@@ -856,6 +872,34 @@ class DataPipeline:
             return {}
 
         return {k: round(v / total_minutes, 3) for k, v in totals.items()}
+
+    def _calculate_opponent_history(self, logs: List[GameLog]) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate per-opponent averages from game logs.
+        Groups games by opponent and calculates averages for each.
+
+        Returns: {opponent_id: {stat_key: avg, "games": count}}
+        """
+        if not logs:
+            return {}
+
+        # Group games by opponent
+        opponent_games: Dict[str, List[GameLog]] = {}
+        for log in logs:
+            opp_id = log.opponent
+            if opp_id not in opponent_games:
+                opponent_games[opp_id] = []
+            opponent_games[opp_id].append(log)
+
+        # Calculate averages per opponent
+        result = {}
+        for opp_id, games in opponent_games.items():
+            if len(games) >= 1:  # At least 1 game against this opponent
+                avgs = self._calculate_averages(games)
+                avgs["games"] = len(games)
+                result[opp_id] = avgs
+
+        return result
 
     # -------------------------------------------------------------------------
     # Build Team Profile

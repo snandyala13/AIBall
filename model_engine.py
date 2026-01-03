@@ -206,17 +206,20 @@ class ProjectionEngine:
     """
 
     # Base weights for averaging periods (favor recent form)
+    # L3 weighted highest for recency, then L5, L10, season
     WEIGHTS = {
-        "last_5": 0.55,
-        "last_10": 0.30,
-        "season": 0.15
-    }
-
-    # Weights when role change detected (heavily favor recent)
-    ROLE_CHANGE_WEIGHTS = {
-        "last_5": 0.70,
+        "last_3": 0.40,
+        "last_5": 0.30,
         "last_10": 0.20,
         "season": 0.10
+    }
+
+    # Weights when role change detected (heavily favor most recent)
+    ROLE_CHANGE_WEIGHTS = {
+        "last_3": 0.55,
+        "last_5": 0.30,
+        "last_10": 0.10,
+        "season": 0.05
     }
 
     def __init__(self, pipeline: DataPipeline):
@@ -225,36 +228,100 @@ class ProjectionEngine:
     def detect_role_change(self, profile: PlayerProfile) -> Tuple[bool, str]:
         """
         Detect if player's role has recently changed based on minutes or scoring trend.
+        Uses L3 vs L10 comparison for better recency detection.
 
         Returns: (role_changed, direction)
             - role_changed: True if significant change detected
             - direction: "expanded" or "reduced" or ""
         """
-        l5_min = profile.last_5_avg.get("min", 0)
+        # Use L3 for most recent, L10 for baseline
+        l3_min = profile.last_3_avg.get("min", 0)
         l10_min = profile.last_10_avg.get("min", 0)
-        l5_pts = profile.last_5_avg.get("pts", 0)
+        l3_pts = profile.last_3_avg.get("pts", 0)
         l10_pts = profile.last_10_avg.get("pts", 0)
 
         min_change = 0.0
         pts_change = 0.0
 
-        # Calculate minutes trend
+        # Calculate minutes trend (L3 vs L10)
         if l10_min > 0:
-            min_change = (l5_min - l10_min) / l10_min
+            min_change = (l3_min - l10_min) / l10_min
 
-        # Calculate scoring trend
+        # Calculate scoring trend (L3 vs L10)
         if l10_pts > 0:
-            pts_change = (l5_pts - l10_pts) / l10_pts
+            pts_change = (l3_pts - l10_pts) / l10_pts
 
-        # Expanded role: 15%+ increase in minutes OR 10%+ increase in scoring
-        if min_change >= 0.15 or pts_change >= 0.10:
+        # Expanded role: 12%+ increase in minutes OR 10%+ increase in scoring
+        if min_change >= 0.12 or pts_change >= 0.10:
             return True, "expanded"
 
-        # Reduced role: 15%+ decrease in minutes OR 10%+ decrease in scoring
-        if min_change <= -0.15 or pts_change <= -0.10:
+        # Reduced role: 12%+ decrease in minutes OR 10%+ decrease in scoring
+        if min_change <= -0.12 or pts_change <= -0.10:
             return True, "reduced"
 
         return False, ""
+
+    def detect_minutes_trend(self, profile: PlayerProfile) -> Tuple[float, str]:
+        """
+        Detect if player's minutes are trending up or down.
+        Compares L3 minutes vs L10 minutes.
+
+        Returns: (trend_factor, direction)
+            - trend_factor: Multiplier to apply (0.95 to 1.05)
+            - direction: "up", "down", or "stable"
+        """
+        l3_min = profile.last_3_avg.get("min", 0)
+        l10_min = profile.last_10_avg.get("min", 0)
+
+        if l10_min <= 0:
+            return 1.0, "stable"
+
+        pct_change = (l3_min - l10_min) / l10_min
+
+        # Strong upward trend (10%+ increase in L3 vs L10)
+        if pct_change >= 0.10:
+            # Cap at 5% boost to avoid overreaction
+            return min(1.05, 1.0 + (pct_change * 0.4)), "up"
+
+        # Strong downward trend (10%+ decrease in L3 vs L10)
+        if pct_change <= -0.10:
+            # Cap at 5% reduction
+            return max(0.95, 1.0 + (pct_change * 0.4)), "down"
+
+        return 1.0, "stable"
+
+    def detect_streak(self, profile: PlayerProfile, stat_key: str) -> Tuple[float, str]:
+        """
+        Detect if player is on a hot or cold streak for a specific stat.
+        Compares L3 performance to L10 baseline using standard deviation.
+
+        Returns: (streak_factor, direction)
+            - streak_factor: Multiplier to apply (0.97 to 1.03)
+            - direction: "hot", "cold", or "neutral"
+        """
+        l3_val = profile.last_3_avg.get(stat_key, 0)
+        l10_val = profile.last_10_avg.get(stat_key, 0)
+        std_dev = profile.std_dev.get(stat_key, 0)
+
+        if l10_val <= 0 or std_dev <= 0:
+            return 1.0, "neutral"
+
+        # Calculate how many std devs L3 is from L10
+        z_score = (l3_val - l10_val) / std_dev
+
+        # Hot streak: L3 is 1+ std dev above L10
+        if z_score >= 1.0:
+            # Cap at 3% boost, scale by z-score
+            factor = min(1.03, 1.0 + (z_score * 0.02))
+            return factor, "hot"
+
+        # Cold streak: L3 is 1+ std dev below L10
+        if z_score <= -1.0:
+            # Cap at 3% reduction
+            factor = max(0.97, 1.0 + (z_score * 0.02))
+            return factor, "cold"
+
+        return 1.0, "neutral"
 
     def project_minutes(
         self,
@@ -269,29 +336,50 @@ class ProjectionEngine:
 
         Returns: (projected_minutes, fatigue_adj, blowout_adj, base_minutes)
         """
-        # Base minutes from recent games
-        base_minutes = profile.last_10_avg.get("min", 0)
-        if base_minutes == 0:
+        # Check minutes trend first
+        trend_factor, trend_direction = self.detect_minutes_trend(profile)
+
+        # Base minutes - use L3 if trending, otherwise blend L3/L10
+        l3_min = profile.last_3_avg.get("min", 0)
+        l10_min = profile.last_10_avg.get("min", 0)
+
+        if trend_direction != "stable" and l3_min > 0:
+            # Minutes are trending - weight L3 higher (70/30)
+            base_minutes = (l3_min * 0.70) + (l10_min * 0.30)
+        elif l10_min > 0:
+            # Stable - use L10 as base
+            base_minutes = l10_min
+        else:
             base_minutes = profile.season_avg.get("min", 28)
 
         projected = base_minutes
         fatigue_adj = 0.0
         blowout_adj = 0.0
 
-        # B2B fatigue (7% reduction)
+        # Apply minutes trend factor
+        if trend_factor != 1.0:
+            trend_adj = projected * (trend_factor - 1.0)
+            projected += trend_adj
+            fatigue_adj += trend_adj  # Include in fatigue for tracking
+
+        # B2B fatigue (8% reduction)
         if is_b2b or days_rest <= 1:
             reduction = base_minutes * (1 - AdjustmentFactors.B2B_FATIGUE_FACTOR)
             projected -= reduction
-            fatigue_adj = -reduction
-        # Extra rest bonus (light weight per user request)
+            fatigue_adj -= reduction
+        # Extra rest bonus - granular based on days
         elif days_rest >= 4:
-            boost = base_minutes * 0.02  # 2% boost for 4+ days rest
+            boost = base_minutes * 0.03  # 3% boost for 4+ days rest
             projected += boost
-            fatigue_adj = boost
+            fatigue_adj += boost
         elif days_rest >= 3:
-            boost = base_minutes * 0.01  # 1% boost for 3 days rest
+            boost = base_minutes * 0.02  # 2% boost for 3 days rest
             projected += boost
-            fatigue_adj = boost
+            fatigue_adj += boost
+        elif days_rest >= 2:
+            boost = base_minutes * 0.01  # 1% boost for 2 days rest
+            projected += boost
+            fatigue_adj += boost
 
         # Blowout risk (large favorites)
         abs_spread = abs(spread)
@@ -322,6 +410,11 @@ class ProjectionEngine:
         role_changed, direction = self.detect_role_change(profile) if use_role_change else (False, "")
         weight_set = self.ROLE_CHANGE_WEIGHTS if role_changed else self.WEIGHTS
 
+        # L3 gets highest weight for recency
+        if stat_key in profile.last_3_avg:
+            values.append(profile.last_3_avg[stat_key])
+            weights.append(weight_set["last_3"])
+
         if stat_key in profile.last_5_avg:
             values.append(profile.last_5_avg[stat_key])
             weights.append(weight_set["last_5"])
@@ -347,7 +440,8 @@ class ProjectionEngine:
         projected_minutes: float,
         is_home: bool,
         opponent_def_rating: float,
-        pace_factor: float
+        pace_factor: float,
+        opponent_team_id: int = None
     ) -> Tuple[float, Dict[str, float]]:
         """
         Project a single stat with all adjustments.
@@ -360,13 +454,15 @@ class ProjectionEngine:
             "home_away": 0.0,
             "defense": 0.0,
             "pace": 0.0,
+            "streak": 0.0,
+            "opponent": 0.0,
         }
 
         # Handle combined stats
         if prop_type in COMBINED_STAT_MAPPING:
             return self._project_combined_stat(
                 profile, prop_type, projected_minutes,
-                is_home, opponent_def_rating, pace_factor
+                is_home, opponent_def_rating, pace_factor, opponent_team_id
             )
 
         # Handle milestone props
@@ -402,17 +498,52 @@ class ProjectionEngine:
             projected += minutes_adj
             adjustments["minutes"] = minutes_adj
 
-        # Home/away adjustment
-        if is_home and profile.home_avg.get(stat_key):
-            home_diff = profile.home_avg[stat_key] - self.get_weighted_stat(profile, stat_key)
-            home_adj = home_diff * 0.3  # Dampened
-            projected += home_adj
-            adjustments["home_away"] = home_adj
-        elif not is_home and profile.away_avg.get(stat_key):
-            away_diff = profile.away_avg[stat_key] - self.get_weighted_stat(profile, stat_key)
-            away_adj = away_diff * 0.3
-            projected += away_adj
-            adjustments["home_away"] = away_adj
+        # Home/away adjustment - prefer L5 splits for recency
+        if is_home:
+            # Use L5 home splits if available, fallback to full home splits
+            home_stat = profile.home_l5_avg.get(stat_key) or profile.home_avg.get(stat_key)
+            if home_stat:
+                home_diff = home_stat - self.get_weighted_stat(profile, stat_key)
+                home_adj = home_diff * 0.3  # Dampened
+                projected += home_adj
+                adjustments["home_away"] = home_adj
+        else:
+            # Use L5 away splits if available, fallback to full away splits
+            away_stat = profile.away_l5_avg.get(stat_key) or profile.away_avg.get(stat_key)
+            if away_stat:
+                away_diff = away_stat - self.get_weighted_stat(profile, stat_key)
+                away_adj = away_diff * 0.3
+                projected += away_adj
+                adjustments["home_away"] = away_adj
+
+        # Streak adjustment (hot/cold detection)
+        streak_factor, streak_direction = self.detect_streak(profile, stat_key)
+        if streak_factor != 1.0:
+            streak_adj = projected * (streak_factor - 1)
+            projected *= streak_factor
+            adjustments["streak"] = streak_adj
+
+        # Opponent-specific adjustment (historical performance vs this team)
+        if opponent_team_id and str(opponent_team_id) in profile.opponent_history:
+            opp_history = profile.opponent_history[str(opponent_team_id)]
+            games_vs_opp = opp_history.get("games", 0)
+
+            # Only apply if 2+ games against this opponent for reliability
+            if games_vs_opp >= 2 and stat_key in opp_history:
+                opp_avg = opp_history[stat_key]
+                overall_avg = self.get_weighted_stat(profile, stat_key)
+
+                if overall_avg > 0:
+                    # How much better/worse does player perform vs this opponent?
+                    opp_diff_pct = (opp_avg - overall_avg) / overall_avg
+
+                    # Cap at +/- 15% adjustment, weight by sample size
+                    sample_weight = min(games_vs_opp / 5.0, 1.0)  # Max weight at 5+ games
+                    capped_diff = max(-0.15, min(0.15, opp_diff_pct)) * sample_weight * 0.5
+
+                    opp_adj = projected * capped_diff
+                    projected += opp_adj
+                    adjustments["opponent"] = opp_adj
 
         # Defense adjustment
         def_factor = self._get_defense_factor(
@@ -448,12 +579,16 @@ class ProjectionEngine:
         projected_minutes: float,
         is_home: bool,
         opponent_def_rating: float,
-        pace_factor: float
+        pace_factor: float,
+        opponent_team_id: int = None
     ) -> Tuple[float, Dict[str, float]]:
         """Project combined stats (PRA, PR, etc.)"""
         stat_keys = COMBINED_STAT_MAPPING.get(prop_type, [])
         total = 0.0
-        adjustments = {"base": 0.0, "minutes": 0.0, "home_away": 0.0, "defense": 0.0, "pace": 0.0}
+        adjustments = {
+            "base": 0.0, "minutes": 0.0, "home_away": 0.0,
+            "defense": 0.0, "pace": 0.0, "streak": 0.0, "opponent": 0.0
+        }
 
         for stat_key in stat_keys:
             # Map stat key to PropType for individual projection
@@ -462,7 +597,7 @@ class ProjectionEngine:
             if individual_prop:
                 val, adj = self.project_stat(
                     profile, individual_prop, projected_minutes,
-                    is_home, opponent_def_rating, pace_factor
+                    is_home, opponent_def_rating, pace_factor, opponent_team_id
                 )
                 total += val
                 for k in adjustments:
@@ -498,8 +633,14 @@ class ProjectionEngine:
         position: str,
         prop_type: PropType
     ) -> float:
-        """Get defensive adjustment factor"""
-        # Categorize defense
+        """
+        Get defensive adjustment factor with position-specific matchup logic.
+
+        Guards (PG/SG) are more affected by perimeter defense.
+        Bigs (PF/C) are more affected by interior defense.
+        Defensive rating serves as proxy for overall defense quality.
+        """
+        # Categorize defense tier
         if opponent_def_rating <= 108:
             def_tier = "elite"
         elif opponent_def_rating <= 111:
@@ -511,21 +652,55 @@ class ProjectionEngine:
         else:
             def_tier = "bad"
 
-        # Get position factor
+        # Normalize position
         pos = position.upper() if position else "SF"
         if pos not in ["PG", "SG", "SF", "PF", "C"]:
-            # Handle combo positions like "G" or "F"
-            if "G" in pos:
+            # Handle combo positions like "G", "F", "G-F"
+            if "G" in pos and "F" not in pos:
                 pos = "SG"
-            elif "F" in pos:
+            elif "F" in pos and "G" not in pos:
                 pos = "SF"
+            elif "C" in pos:
+                pos = "C"
             else:
-                pos = "SF"
+                pos = "SF"  # Default for combo players
 
+        # Get base position factor from tier
         factor = AdjustmentFactors.DEFENSE_VS_POSITION.get(def_tier, {}).get(pos, 1.0)
 
+        # Enhanced position-specific adjustments
+        # Guards face more perimeter pressure from elite defenses
+        if pos in ["PG", "SG"] and def_tier in ["elite", "good"]:
+            if prop_type == PropType.POINTS:
+                # Elite perimeter defense hits guards harder on scoring
+                factor = factor * 0.97 if def_tier == "elite" else factor * 0.98
+            elif prop_type == PropType.ASSISTS:
+                # Good defenses pressure passing lanes
+                factor = factor * 0.96 if def_tier == "elite" else factor * 0.97
+            elif prop_type == PropType.THREES:
+                # Three-point shooters suffer most vs elite perimeter D
+                factor = factor * 0.95 if def_tier == "elite" else factor * 0.97
+
+        # Bigs face more interior pressure
+        if pos in ["PF", "C"] and def_tier in ["elite", "good"]:
+            if prop_type == PropType.REBOUNDS:
+                # Elite rebounding teams limit opponent rebounds
+                factor = factor * 0.96 if def_tier == "elite" else factor * 0.97
+            elif prop_type == PropType.POINTS:
+                # Rim protection limits inside scoring
+                factor = factor * 0.95 if def_tier == "elite" else factor * 0.97
+
+        # Conversely, bad defenses get exploited more by specific positions
+        if def_tier in ["poor", "bad"]:
+            if pos in ["PG", "SG"] and prop_type in [PropType.POINTS, PropType.THREES]:
+                # Guards feast vs poor perimeter defense
+                factor = factor * 1.03 if def_tier == "bad" else factor * 1.02
+            elif pos in ["PF", "C"] and prop_type in [PropType.POINTS, PropType.REBOUNDS]:
+                # Bigs dominate poor interior defense
+                factor = factor * 1.04 if def_tier == "bad" else factor * 1.02
+
         # Defense matters less for some props
-        if prop_type in [PropType.TURNOVERS, PropType.STEALS]:
+        if prop_type in [PropType.TURNOVERS, PropType.STEALS, PropType.BLOCKS]:
             factor = 1 + (factor - 1) * 0.5  # Dampen
 
         return factor
