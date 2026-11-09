@@ -1,0 +1,79 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Development artifacts
+catboost_info/
+*.txt
+!requirements.txt
+!QUICKSTART.md
+
+# Large data files (pulled from S3 at startup)
+cache.db
+cache_2025_backup.db
+lines.db
+outputs/backtest_*.json
+outputs/v2_training*/
+outputs/v2_predictions_*.jsonl
+outputs/line_snapshots_*.jsonl
+outputs/grading_report_*.json
+outputs/oct25_*.json
+outputs/tracking_data_*.json
+outputs/pbp_data_*.json
+
+# Keep empirical filter (needed at runtime)
+!outputs/empirical_filter.json
+
+# Test/dev scripts
+tests/
+*.ipynb
+analyze_jan2026.py
+build_*.py
+enrich_*.py
+try_*.py
+hyperparam_search.py
+feature_selection.py
+train_v2_final.py
+train_v3_classifier.py
+run_model_experiments.py
+market_structure_exploits.py
+experiments_L_P*.py
+try_alternative_models.py
+
+# Old game outputs
+2026-*_*.txt
+bulls_pistons.txt
+clippers_knicks.txt
+jazz_thunder.txt
+magic_nets.txt
+
+# Old model experiments (not needed in image)
+models/v2_optimized/
+ml_filter_v5.py
+
+# CDK outputs
+infra/cdk.out/
+
+# Secrets
+.env
+.env.*
+
+# Claude
+.claude/
+CLAUDE_NOTES.md
+
+# CSV data files
+*.csv

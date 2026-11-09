@@ -1,0 +1,1042 @@
+{
+ "Resources": {
+  "AiBallVpcDC403AB7": {
+   "Type": "AWS::EC2::VPC",
+   "Properties": {
+    "CidrBlock": "10.0.0.0/16",
+    "EnableDnsHostnames": true,
+    "EnableDnsSupport": true,
+    "InstanceTenancy": "default",
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/Resource"
+   }
+  },
+  "AiBallVpcPublicSubnet1Subnet220FA55C": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": {
+     "Fn::Select": [
+      0,
+      {
+       "Fn::GetAZs": ""
+      }
+     ]
+    },
+    "CidrBlock": "10.0.0.0/24",
+    "MapPublicIpOnLaunch": true,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Public"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Public"
+     },
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PublicSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet1/Subnet"
+   }
+  },
+  "AiBallVpcPublicSubnet1RouteTable290FD178": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PublicSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet1/RouteTable"
+   }
+  },
+  "AiBallVpcPublicSubnet1RouteTableAssociation1D59416E": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AiBallVpcPublicSubnet1RouteTable290FD178"
+    },
+    "SubnetId": {
+     "Ref": "AiBallVpcPublicSubnet1Subnet220FA55C"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet1/RouteTableAssociation"
+   }
+  },
+  "AiBallVpcPublicSubnet1DefaultRouteEB521B73": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "GatewayId": {
+     "Ref": "AiBallVpcIGW9AAA517B"
+    },
+    "RouteTableId": {
+     "Ref": "AiBallVpcPublicSubnet1RouteTable290FD178"
+    }
+   },
+   "DependsOn": [
+    "AiBallVpcVPCGW78C8D5DD"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet1/DefaultRoute"
+   }
+  },
+  "AiBallVpcPublicSubnet1EIPAFA5B5BF": {
+   "Type": "AWS::EC2::EIP",
+   "Properties": {
+    "Domain": "vpc",
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PublicSubnet1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet1/EIP"
+   }
+  },
+  "AiBallVpcPublicSubnet1NATGatewayE9BCBB6D": {
+   "Type": "AWS::EC2::NatGateway",
+   "Properties": {
+    "AllocationId": {
+     "Fn::GetAtt": [
+      "AiBallVpcPublicSubnet1EIPAFA5B5BF",
+      "AllocationId"
+     ]
+    },
+    "SubnetId": {
+     "Ref": "AiBallVpcPublicSubnet1Subnet220FA55C"
+    },
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PublicSubnet1"
+     }
+    ]
+   },
+   "DependsOn": [
+    "AiBallVpcPublicSubnet1DefaultRouteEB521B73",
+    "AiBallVpcPublicSubnet1RouteTableAssociation1D59416E"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet1/NATGateway"
+   }
+  },
+  "AiBallVpcPublicSubnet2Subnet4FE224D7": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": {
+     "Fn::Select": [
+      1,
+      {
+       "Fn::GetAZs": ""
+      }
+     ]
+    },
+    "CidrBlock": "10.0.1.0/24",
+    "MapPublicIpOnLaunch": true,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Public"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Public"
+     },
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PublicSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet2/Subnet"
+   }
+  },
+  "AiBallVpcPublicSubnet2RouteTable96C44D85": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PublicSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet2/RouteTable"
+   }
+  },
+  "AiBallVpcPublicSubnet2RouteTableAssociation7DB401D2": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AiBallVpcPublicSubnet2RouteTable96C44D85"
+    },
+    "SubnetId": {
+     "Ref": "AiBallVpcPublicSubnet2Subnet4FE224D7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet2/RouteTableAssociation"
+   }
+  },
+  "AiBallVpcPublicSubnet2DefaultRouteDE9E5062": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "GatewayId": {
+     "Ref": "AiBallVpcIGW9AAA517B"
+    },
+    "RouteTableId": {
+     "Ref": "AiBallVpcPublicSubnet2RouteTable96C44D85"
+    }
+   },
+   "DependsOn": [
+    "AiBallVpcVPCGW78C8D5DD"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PublicSubnet2/DefaultRoute"
+   }
+  },
+  "AiBallVpcPrivateSubnet1SubnetFF3E80CF": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": {
+     "Fn::Select": [
+      0,
+      {
+       "Fn::GetAZs": ""
+      }
+     ]
+    },
+    "CidrBlock": "10.0.2.0/24",
+    "MapPublicIpOnLaunch": false,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Private"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Private"
+     },
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PrivateSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet1/Subnet"
+   }
+  },
+  "AiBallVpcPrivateSubnet1RouteTable05B79720": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PrivateSubnet1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet1/RouteTable"
+   }
+  },
+  "AiBallVpcPrivateSubnet1RouteTableAssociationD0A84796": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AiBallVpcPrivateSubnet1RouteTable05B79720"
+    },
+    "SubnetId": {
+     "Ref": "AiBallVpcPrivateSubnet1SubnetFF3E80CF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet1/RouteTableAssociation"
+   }
+  },
+  "AiBallVpcPrivateSubnet1DefaultRoute724E0CDB": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "NatGatewayId": {
+     "Ref": "AiBallVpcPublicSubnet1NATGatewayE9BCBB6D"
+    },
+    "RouteTableId": {
+     "Ref": "AiBallVpcPrivateSubnet1RouteTable05B79720"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet1/DefaultRoute"
+   }
+  },
+  "AiBallVpcPrivateSubnet2Subnet657A54A6": {
+   "Type": "AWS::EC2::Subnet",
+   "Properties": {
+    "AvailabilityZone": {
+     "Fn::Select": [
+      1,
+      {
+       "Fn::GetAZs": ""
+      }
+     ]
+    },
+    "CidrBlock": "10.0.3.0/24",
+    "MapPublicIpOnLaunch": false,
+    "Tags": [
+     {
+      "Key": "aws-cdk:subnet-name",
+      "Value": "Private"
+     },
+     {
+      "Key": "aws-cdk:subnet-type",
+      "Value": "Private"
+     },
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PrivateSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet2/Subnet"
+   }
+  },
+  "AiBallVpcPrivateSubnet2RouteTableF437F954": {
+   "Type": "AWS::EC2::RouteTable",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc/PrivateSubnet2"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet2/RouteTable"
+   }
+  },
+  "AiBallVpcPrivateSubnet2RouteTableAssociation87552D46": {
+   "Type": "AWS::EC2::SubnetRouteTableAssociation",
+   "Properties": {
+    "RouteTableId": {
+     "Ref": "AiBallVpcPrivateSubnet2RouteTableF437F954"
+    },
+    "SubnetId": {
+     "Ref": "AiBallVpcPrivateSubnet2Subnet657A54A6"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet2/RouteTableAssociation"
+   }
+  },
+  "AiBallVpcPrivateSubnet2DefaultRoute8EA216B3": {
+   "Type": "AWS::EC2::Route",
+   "Properties": {
+    "DestinationCidrBlock": "0.0.0.0/0",
+    "NatGatewayId": {
+     "Ref": "AiBallVpcPublicSubnet1NATGatewayE9BCBB6D"
+    },
+    "RouteTableId": {
+     "Ref": "AiBallVpcPrivateSubnet2RouteTableF437F954"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/PrivateSubnet2/DefaultRoute"
+   }
+  },
+  "AiBallVpcIGW9AAA517B": {
+   "Type": "AWS::EC2::InternetGateway",
+   "Properties": {
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalNetwork/AiBallVpc"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/IGW"
+   }
+  },
+  "AiBallVpcVPCGW78C8D5DD": {
+   "Type": "AWS::EC2::VPCGatewayAttachment",
+   "Properties": {
+    "InternetGatewayId": {
+     "Ref": "AiBallVpcIGW9AAA517B"
+    },
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AiBallVpc/VPCGW"
+   }
+  },
+  "AlbSg1155C1BE": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "ALB - inbound HTTPS from internet",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "SecurityGroupIngress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow HTTPS from anywhere",
+      "FromPort": 443,
+      "IpProtocol": "tcp",
+      "ToPort": 443
+     },
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow from anyone on port 80",
+      "FromPort": 80,
+      "IpProtocol": "tcp",
+      "ToPort": 80
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/AlbSg/Resource"
+   }
+  },
+  "FargateSg4CA74029": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Fargate tasks - inbound 8000 from ALB only",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "0.0.0.0/0",
+      "Description": "Allow all outbound traffic by default",
+      "IpProtocol": "-1"
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/FargateSg/Resource"
+   }
+  },
+  "FargateSgfromPropTerminalNetworkAlbSg9971C7438000464A343C": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "Allow traffic from ALB on port 8000",
+    "FromPort": 8000,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "FargateSg4CA74029",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "AlbSg1155C1BE",
+      "GroupId"
+     ]
+    },
+    "ToPort": 8000
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/FargateSg/from PropTerminalNetworkAlbSg9971C743:8000"
+   }
+  },
+  "EfsSgCAB16DA1": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "EFS - inbound NFS from Fargate only",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "255.255.255.255/32",
+      "Description": "Disallow all traffic",
+      "FromPort": 252,
+      "IpProtocol": "icmp",
+      "ToPort": 86
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/EfsSg/Resource"
+   }
+  },
+  "EfsSgfromPropTerminalNetworkFargateSg61DEFE2A2049ED3768FD": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "Allow NFS from Fargate tasks",
+    "FromPort": 2049,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "EfsSgCAB16DA1",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "FargateSg4CA74029",
+      "GroupId"
+     ]
+    },
+    "ToPort": 2049
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/EfsSg/from PropTerminalNetworkFargateSg61DEFE2A:2049"
+   }
+  },
+  "RdsSg7F9F43B6": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "RDS - inbound PostgreSQL from Fargate only",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "255.255.255.255/32",
+      "Description": "Disallow all traffic",
+      "FromPort": 252,
+      "IpProtocol": "icmp",
+      "ToPort": 86
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/RdsSg/Resource"
+   }
+  },
+  "RdsSgfromPropTerminalNetworkFargateSg61DEFE2A5432DD326B9B": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "Allow PostgreSQL from Fargate tasks",
+    "FromPort": 5432,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "RdsSg7F9F43B6",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "FargateSg4CA74029",
+      "GroupId"
+     ]
+    },
+    "ToPort": 5432
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/RdsSg/from PropTerminalNetworkFargateSg61DEFE2A:5432"
+   }
+  },
+  "RedisSgFB48DCCD": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Redis - inbound 6379 from Fargate only",
+    "SecurityGroupEgress": [
+     {
+      "CidrIp": "255.255.255.255/32",
+      "Description": "Disallow all traffic",
+      "FromPort": 252,
+      "IpProtocol": "icmp",
+      "ToPort": 86
+     }
+    ],
+    "VpcId": {
+     "Ref": "AiBallVpcDC403AB7"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/RedisSg/Resource"
+   }
+  },
+  "RedisSgfromPropTerminalNetworkFargateSg61DEFE2A6379DB1ADBD1": {
+   "Type": "AWS::EC2::SecurityGroupIngress",
+   "Properties": {
+    "Description": "Allow Redis from Fargate tasks",
+    "FromPort": 6379,
+    "GroupId": {
+     "Fn::GetAtt": [
+      "RedisSgFB48DCCD",
+      "GroupId"
+     ]
+    },
+    "IpProtocol": "tcp",
+    "SourceSecurityGroupId": {
+     "Fn::GetAtt": [
+      "FargateSg4CA74029",
+      "GroupId"
+     ]
+    },
+    "ToPort": 6379
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/RedisSg/from PropTerminalNetworkFargateSg61DEFE2A:6379"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/32OTQuCQBRFf0v7cQrDoGVEhJsYNNzGOL3qpc7IzJtExP+e9uWu1T3vcHnckIdRxBcz2bhAnYugxJx3KUlVsEGdQIW8y2rFthediS0TPi9RpT7XQKObKDGe4CjzEiY/uY1zRqEkNPpXHmEXizEOkvaSoJEtExYfA06PY01gB/4W3ks+14aGqbcKNLEUlLdI7d4aX782/BWxvlpwrmcJOOOtgp6Jlm5Gz5d8zVezu0MMrNeEFfDknU8AfVfKLQEAAA=="
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalNetwork/CDKMetadata/Default"
+   },
+   "Condition": "CDKMetadataAvailable"
+  }
+ },
+ "Conditions": {
+  "CDKMetadataAvailable": {
+   "Fn::Or": [
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "af-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-3"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-south-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-3"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-4"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ca-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ca-west-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "cn-north-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "cn-northwest-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-central-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-north-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-south-2"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-3"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "il-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "me-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "me-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "sa-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-east-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-west-1"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Equals": [
+      {
+       "Ref": "AWS::Region"
+      },
+      "us-west-2"
+     ]
+    }
+   ]
+  }
+ },
+ "Outputs": {
+  "ExportsOutputFnGetAttEfsSgCAB16DA1GroupId4DE98B00": {
+   "Value": {
+    "Fn::GetAtt": [
+     "EfsSgCAB16DA1",
+     "GroupId"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputFnGetAttEfsSgCAB16DA1GroupId4DE98B00"
+   }
+  },
+  "ExportsOutputRefAiBallVpcPublicSubnet1Subnet220FA55C82B8B6C5": {
+   "Value": {
+    "Ref": "AiBallVpcPublicSubnet1Subnet220FA55C"
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPublicSubnet1Subnet220FA55C82B8B6C5"
+   }
+  },
+  "ExportsOutputRefAiBallVpcPublicSubnet2Subnet4FE224D7545A29BC": {
+   "Value": {
+    "Ref": "AiBallVpcPublicSubnet2Subnet4FE224D7"
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPublicSubnet2Subnet4FE224D7545A29BC"
+   }
+  },
+  "ExportsOutputRefAiBallVpcPrivateSubnet1SubnetFF3E80CFB34CDEB1": {
+   "Value": {
+    "Ref": "AiBallVpcPrivateSubnet1SubnetFF3E80CF"
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet1SubnetFF3E80CFB34CDEB1"
+   }
+  },
+  "ExportsOutputRefAiBallVpcPrivateSubnet2Subnet657A54A6752952DE": {
+   "Value": {
+    "Ref": "AiBallVpcPrivateSubnet2Subnet657A54A6"
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet2Subnet657A54A6752952DE"
+   }
+  },
+  "ExportsOutputFnGetAttRdsSg7F9F43B6GroupId133E31A8": {
+   "Value": {
+    "Fn::GetAtt": [
+     "RdsSg7F9F43B6",
+     "GroupId"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputFnGetAttRdsSg7F9F43B6GroupId133E31A8"
+   }
+  },
+  "ExportsOutputFnGetAttRedisSgFB48DCCDGroupIdDFA83897": {
+   "Value": {
+    "Fn::GetAtt": [
+     "RedisSgFB48DCCD",
+     "GroupId"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputFnGetAttRedisSgFB48DCCDGroupIdDFA83897"
+   }
+  },
+  "ExportsOutputFnGetAttFargateSg4CA74029GroupId34D43193": {
+   "Value": {
+    "Fn::GetAtt": [
+     "FargateSg4CA74029",
+     "GroupId"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputFnGetAttFargateSg4CA74029GroupId34D43193"
+   }
+  },
+  "ExportsOutputFnGetAttAlbSg1155C1BEGroupIdF2A72E65": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AlbSg1155C1BE",
+     "GroupId"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputFnGetAttAlbSg1155C1BEGroupIdF2A72E65"
+   }
+  },
+  "ExportsOutputRefAiBallVpcDC403AB7B73ADCBF": {
+   "Value": {
+    "Ref": "AiBallVpcDC403AB7"
+   },
+   "Export": {
+    "Name": "PropTerminalNetwork:ExportsOutputRefAiBallVpcDC403AB7B73ADCBF"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}PropTerminal - {{ player_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="/" class="back-link">&larr; Dashboard</a>
+    <h1 id="player-title">{{ player_name }}</h1>
+    <p class="text-muted" id="player-subtitle">Loading...</p>
+</div>
+
+<div id="player-loading" class="loading-container">
+    <div class="spinner"></div>
+    <p>Loading player profile...</p>
+</div>
+
+<div id="player-error" class="empty-state" style="display:none;">
+    <p>Player not found.</p>
+</div>
+
+<div id="player-content" style="display:none;">
+    <!-- Profile Header -->
+    <div class="player-header" id="player-header"></div>
+
+    <!-- Averages Table -->
+    <section class="section">
+        <h2 class="section-title">Stat Averages</h2>
+        <div class="table-wrapper">
+            <table class="proj-table" id="averages-table">
+                <thead>
+                    <tr>
+                        <th>Stat</th>
+                        <th>Season</th>
+                        <th>L3</th>
+                        <th>L5</th>
+                        <th>L10</th>
+                        <th>StdDev</th>
+                    </tr>
+                </thead>
+                <tbody id="averages-tbody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Home/Away Splits -->
+    <section class="section">
+        <h2 class="section-title">Home / Away Splits</h2>
+        <div class="splits-grid" id="splits-grid"></div>
+    </section>
+
+    <!-- Game Logs -->
+    <section class="section">
+        <h2 class="section-title">Recent Game Logs <span class="section-subtitle" id="logs-count"></span></h2>
+        <div class="table-wrapper">
+            <table class="proj-table" id="logs-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Opp</th>
+                        <th>H/A</th>
+                        <th>MIN</th>
+                        <th>PTS</th>
+                        <th>REB</th>
+                        <th>AST</th>
+                        <th>3PM</th>
+                        <th>STL</th>
+                        <th>BLK</th>
+                        <th>TO</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-tbody"></tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var playerName = "{{ player_name }}";
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadPlayer(playerName);
+});
+
+function loadPlayer(name) {
+    var loading = document.getElementById('player-loading');
+    var content = document.getElementById('player-content');
+    var error = document.getElementById('player-error');
+
+    loading.style.display = 'flex';
+    content.style.display = 'none';
+    error.style.display = 'none';
+
+    fetch('/api/player/' + encodeURIComponent(name))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            loading.style.display = 'none';
+
+            if (data.error) {
+                error.querySelector('p').textContent = 'Error: ' + data.error;
+                error.style.display = 'block';
+                return;
+            }
+
+            content.style.display = 'block';
+            renderPlayerHeader(data);
+            renderAverages(data);
+            renderSplits(data);
+            renderGameLogs(data);
+        })
+        .catch(function(err) {
+            loading.style.display = 'none';
+            error.querySelector('p').textContent = 'Error: ' + err.message;
+            error.style.display = 'block';
+        });
+}
+
+function renderPlayerHeader(p) {
+    var header = document.getElementById('player-header');
+    var statusClass = p.status === 'active' ? 'status-active' : (p.status === 'out' ? 'status-out' : 'status-questionable');
+
+    header.innerHTML =
+        '<div class="profile-info">' +
+            '<h2>' + p.name + '</h2>' +
+            '<div class="profile-meta">' +
+                '<span class="meta-tag">' + p.team + '</span>' +
+                '<span class="meta-tag">' + p.position + '</span>' +
+                '<span class="meta-tag ' + statusClass + '">' + p.status.toUpperCase() + '</span>' +
+                (p.injury_note ? '<span class="meta-tag status-injury">' + p.injury_note + '</span>' : '') +
+                (p.usage_pct ? '<span class="meta-tag">USG: ' + p.usage_pct.toFixed(1) + '%</span>' : '') +
+            '</div>' +
+        '</div>';
+
+    document.getElementById('player-subtitle').textContent = p.team + ' | ' + p.position;
+}
+
+function renderAverages(p) {
+    var tbody = document.getElementById('averages-tbody');
+    tbody.innerHTML = '';
+
+    var stats = ['pts', 'reb', 'ast', 'fg3m', 'stl', 'blk', 'turnover', 'min', 'fga', 'fgm', 'fta', 'ftm'];
+    var labels = {
+        'pts': 'Points', 'reb': 'Rebounds', 'ast': 'Assists', 'fg3m': '3PM',
+        'stl': 'Steals', 'blk': 'Blocks', 'turnover': 'Turnovers', 'min': 'Minutes',
+        'fga': 'FGA', 'fgm': 'FGM', 'fta': 'FTA', 'ftm': 'FTM'
+    };
+
+    stats.forEach(function(stat) {
+        var season = p.season_avg[stat];
+        var l3 = p.last_3_avg[stat];
+        var l5 = p.last_5_avg[stat];
+        var l10 = p.last_10_avg[stat];
+        var std = p.std_dev[stat];
+
+        if (season === undefined && l5 === undefined) return;
+
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+            '<td><strong>' + (labels[stat] || stat) + '</strong></td>' +
+            '<td>' + formatNum(season) + '</td>' +
+            '<td>' + formatNum(l3) + '</td>' +
+            '<td>' + formatNum(l5) + '</td>' +
+            '<td>' + formatNum(l10) + '</td>' +
+            '<td>' + formatNum(std) + '</td>';
+
+        tbody.appendChild(tr);
+    });
+}
+
+function renderSplits(p) {
+    var grid = document.getElementById('splits-grid');
+    grid.innerHTML = '';
+
+    var stats = ['pts', 'reb', 'ast', 'fg3m', 'stl', 'blk'];
+    var labels = {'pts': 'PTS', 'reb': 'REB', 'ast': 'AST', 'fg3m': '3PM', 'stl': 'STL', 'blk': 'BLK'};
+
+    // Home card
+    var homeCard = document.createElement('div');
+    homeCard.className = 'split-card';
+    var homeHtml = '<h3>Home</h3><div class="split-stats">';
+    stats.forEach(function(stat) {
+        var val = p.home_avg[stat];
+        if (val !== undefined) {
+            homeHtml += '<div class="split-stat"><span class="split-label">' + labels[stat] + '</span><span class="split-value">' + formatNum(val) + '</span></div>';
+        }
+    });
+    homeHtml += '</div>';
+    homeCard.innerHTML = homeHtml;
+    grid.appendChild(homeCard);
+
+    // Away card
+    var awayCard = document.createElement('div');
+    awayCard.className = 'split-card';
+    var awayHtml = '<h3>Away</h3><div class="split-stats">';
+    stats.forEach(function(stat) {
+        var val = p.away_avg[stat];
+        if (val !== undefined) {
+            awayHtml += '<div class="split-stat"><span class="split-label">' + labels[stat] + '</span><span class="split-value">' + formatNum(val) + '</span></div>';
+        }
+    });
+    awayHtml += '</div>';
+    awayCard.innerHTML = awayHtml;
+    grid.appendChild(awayCard);
+}
+
+function renderGameLogs(p) {
+    var tbody = document.getElementById('logs-tbody');
+    tbody.innerHTML = '';
+    var logs = p.game_logs || [];
+    document.getElementById('logs-count').textContent = '(' + logs.length + ' games)';
+
+    logs.forEach(function(g) {
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+            '<td>' + g.date + '</td>' +
+            '<td>' + g.opponent + '</td>' +
+            '<td>' + (g.home ? 'H' : 'A') + '</td>' +
+            '<td>' + g.minutes.toFixed(0) + '</td>' +
+            '<td><strong>' + g.pts + '</strong></td>' +
+            '<td>' + g.reb + '</td>' +
+            '<td>' + g.ast + '</td>' +
+            '<td>' + g.fg3m + '</td>' +
+            '<td>' + g.stl + '</td>' +
+            '<td>' + g.blk + '</td>' +
+            '<td>' + g.turnover + '</td>';
+        tbody.appendChild(tr);
+    });
+}
+
+function formatNum(val) {
+    if (val === undefined || val === null) return '--';
+    return (typeof val === 'number') ? val.toFixed(1) : val;
+}
+</script>
+{% endblock %}

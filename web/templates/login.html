@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PropTerminal - Real-time NBA Prop Intelligence</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127936;</text></svg>">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PropTerminal">
+    <meta name="theme-color" content="#0d1117">
+    <style>
+        /* ================================================
+           FONTS — system stack, no external dependencies
+           ================================================ */
+        :root {
+            --bg: #0d1117;
+            --bg-raised: rgba(255,255,255,0.03);
+            --bg-raised-hover: rgba(255,255,255,0.055);
+            --border: rgba(255,255,255,0.06);
+            --border-hover: rgba(255,255,255,0.12);
+            --text: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent: #00d4aa;
+            --accent-green: #00e676;
+            --accent-blue: #40c4ff;
+            --accent-glow: rgba(0,212,170,0.15);
+            --accent-glow-strong: rgba(0,212,170,0.35);
+            --gradient: linear-gradient(135deg, #00d4aa 0%, #00e676 100%);
+            --gradient-text: linear-gradient(135deg, #00d4aa 0%, #00e676 50%, #40c4ff 100%);
+            --radius: 16px;
+            --radius-sm: 10px;
+            --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html {
+            scroll-behavior: smooth;
+            font-size: 16px;
+        }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg);
+            color: var(--text);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            overflow-x: hidden;
+        }
+
+        /* ================================================
+           BACKGROUND — animated grid + floating particles
+           ================================================ */
+        .bg-grid {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);
+            -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);
+        }
+
+        .bg-glow {
+            position: fixed;
+            z-index: 0;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            filter: blur(120px);
+            opacity: 0.12;
+            pointer-events: none;
+        }
+
+        .bg-glow-1 {
+            top: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--accent);
+            animation: glowPulse 8s ease-in-out infinite;
+        }
+
+        .bg-glow-2 {
+            bottom: 20%;
+            right: -100px;
+            background: var(--accent-blue);
+            animation: glowPulse 10s ease-in-out infinite reverse;
+            opacity: 0.06;
+        }
+
+        @keyframes glowPulse {
+            0%, 100% { opacity: 0.10; transform: translateX(-50%) scale(1); }
+            50% { opacity: 0.18; transform: translateX(-50%) scale(1.1); }
+        }
+
+        /* Floating particles */
+        .particles {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .particle {
+            position: absolute;
+            width: 2px;
+            height: 2px;
+            background: var(--accent);
+            border-radius: 50%;
+            opacity: 0;
+            animation: particleFloat linear infinite;
+        }
+
+        @keyframes particleFloat {
+            0% {
+                opacity: 0;
+                transform: translateY(0) translateX(0);
+            }
+            10% { opacity: 0.6; }
+            90% { opacity: 0.6; }
+            100% {
+                opacity: 0;
+                transform: translateY(-100vh) translateX(30px);
+            }
+        }
+
+        /* ================================================
+           LAYOUT
+           ================================================ */
+        .content {
+            position: relative;
+            z-index: 1;
+        }
+
+        section {
+            padding: 6rem 1.5rem;
+        }
+
+        .section-inner {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        /* ================================================
+           HERO
+           ================================================ */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem 1.5rem;
+            position: relative;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 1rem;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--bg-raised);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            letter-spacing: 0.02em;
+            margin-bottom: 2rem;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeUp 0.6s ease forwards 0.2s;
+        }
+
+        .hero-badge-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: dotPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes dotPulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--accent); }
+            50% { opacity: 0.4; box-shadow: none; }
+        }
+
+        .hero-title {
+            font-size: clamp(3rem, 8vw, 5.5rem);
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            line-height: 1;
+            background: var(--gradient-text);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 1.25rem;
+            opacity: 0;
+            transform: translateY(30px);
+            animation: fadeUp 0.7s ease forwards 0.35s;
+        }
+
+        .hero-tagline {
+            font-size: clamp(1.1rem, 2.5vw, 1.4rem);
+            color: var(--text-secondary);
+            max-width: 560px;
+            line-height: 1.6;
+            margin-bottom: 3rem;
+            opacity: 0;
+            transform: translateY(25px);
+            animation: fadeUp 0.7s ease forwards 0.5s;
+        }
+
+        .hero-tagline strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        /* Login form in hero */
+        .hero-login {
+            opacity: 0;
+            transform: translateY(25px);
+            animation: fadeUp 0.7s ease forwards 0.65s;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .login-form {
+            display: flex;
+            gap: 0.75rem;
+            width: 100%;
+        }
+
+        .login-input {
+            flex: 1;
+            padding: 0.85rem 1.25rem;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text);
+            font-family: var(--font);
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
+        }
+
+        .login-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow), 0 0 20px var(--accent-glow);
+            background: rgba(255,255,255,0.06);
+        }
+
+        .login-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .login-btn {
+            padding: 0.85rem 1.75rem;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: var(--gradient);
+            color: #0d1117;
+            font-family: var(--font);
+            font-size: 0.95rem;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: transform 0.2s ease, box-shadow 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .login-btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, transparent 50%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .login-btn:hover {
+            transform: scale(1.04);
+            box-shadow: 0 4px 24px var(--accent-glow-strong), 0 0 60px rgba(0,212,170,0.12);
+        }
+
+        .login-btn:hover::before {
+            opacity: 1;
+        }
+
+        .login-btn:active {
+            transform: scale(0.98);
+        }
+
+        .login-note {
+            margin-top: 1rem;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            opacity: 0;
+            animation: fadeUp 0.6s ease forwards 0.8s;
+        }
+
+        .login-error {
+            margin-top: 1rem;
+            padding: 0.65rem 1rem;
+            background: rgba(255,107,107,0.1);
+            border: 1px solid rgba(255,107,107,0.25);
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            color: #ff6b6b;
+            text-align: center;
+            animation: shake 0.4s ease;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20% { transform: translateX(-6px); }
+            40% { transform: translateX(6px); }
+            60% { transform: translateX(-4px); }
+            80% { transform: translateX(4px); }
+        }
+
+        .hero-scroll-hint {
+            position: absolute;
+            bottom: 2.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            opacity: 0;
+            animation: fadeUp 0.6s ease forwards 1.2s;
+        }
+
+        .scroll-arrow {
+            width: 20px;
+            height: 20px;
+            border-right: 1.5px solid var(--text-muted);
+            border-bottom: 1.5px solid var(--text-muted);
+            transform: rotate(45deg);
+            animation: scrollBounce 2s ease-in-out infinite;
+        }
+
+        @keyframes scrollBounce {
+            0%, 100% { transform: rotate(45deg) translateY(0); opacity: 0.4; }
+            50% { transform: rotate(45deg) translateY(4px); opacity: 1; }
+        }
+
+        /* ================================================
+           STATS BAR
+           ================================================ */
+        .stats-bar {
+            padding: 3rem 1.5rem;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background: rgba(255,255,255,0.01);
+        }
+
+        .stats-bar-inner {
+            max-width: 900px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 2rem;
+            text-align: center;
+        }
+
+        .stat-item {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+
+        .stat-item.visible {
+            animation: fadeUp 0.5s ease forwards;
+        }
+
+        .stat-number {
+            font-size: clamp(1.5rem, 3vw, 2.2rem);
+            font-weight: 800;
+            font-family: var(--font-mono);
+            background: var(--gradient-text);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -0.02em;
+        }
+
+        .stat-label {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-top: 0.3rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        /* ================================================
+           FEATURES
+           ================================================ */
+        .features {
+            padding: 7rem 1.5rem;
+        }
+
+        .features-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: var(--accent);
+            margin-bottom: 1rem;
+            display: block;
+        }
+
+        .section-title {
+            font-size: clamp(1.8rem, 4vw, 2.5rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            color: var(--text);
+            line-height: 1.2;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .feature-card {
+            padding: 2rem;
+            background: var(--bg-raised);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            transition: background 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+            /* scroll animation initial state */
+            opacity: 0;
+            transform: translateX(-40px);
+        }
+
+        .feature-card:nth-child(even) {
+            transform: translateX(40px);
+        }
+
+        .feature-card.visible {
+            opacity: 1;
+            transform: translateX(0);
+            transition: opacity 0.6s ease, transform 0.6s ease, background 0.3s ease, border-color 0.3s ease;
+        }
+
+        .feature-card:hover {
+            background: var(--bg-raised-hover);
+            border-color: var(--border-hover);
+            transform: translateY(-2px);
+        }
+
+        .feature-card.visible:hover {
+            transform: translateY(-2px);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            display: block;
+            line-height: 1;
+        }
+
+        .feature-title {
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        .feature-desc {
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        /* ================================================
+           HOW IT WORKS
+           ================================================ */
+        .how-it-works {
+            padding: 7rem 1.5rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .how-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .steps {
+            display: flex;
+            gap: 2rem;
+            max-width: 900px;
+            margin: 0 auto;
+            justify-content: center;
+        }
+
+        .step {
+            flex: 1;
+            max-width: 280px;
+            text-align: center;
+            padding: 2rem 1.5rem;
+            position: relative;
+            opacity: 0;
+            transform: translateY(30px);
+        }
+
+        .step.visible {
+            animation: fadeUp 0.6s ease forwards;
+        }
+
+        .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: rgba(0,212,170,0.08);
+            border: 1px solid rgba(0,212,170,0.2);
+            font-family: var(--font-mono);
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 1.25rem;
+        }
+
+        .step-icon {
+            font-size: 2rem;
+            display: block;
+            margin-bottom: 1rem;
+        }
+
+        .step-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        .step-desc {
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        /* Connector lines between steps */
+        .step:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            top: 3.5rem;
+            right: -1rem;
+            width: 2rem;
+            height: 1px;
+            background: linear-gradient(90deg, var(--border-hover), transparent);
+        }
+
+        /* ================================================
+           BOTTOM CTA
+           ================================================ */
+        .bottom-cta {
+            padding: 6rem 1.5rem;
+            text-align: center;
+            border-top: 1px solid var(--border);
+            position: relative;
+        }
+
+        .bottom-cta .bg-glow-bottom {
+            position: absolute;
+            bottom: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 500px;
+            height: 500px;
+            border-radius: 50%;
+            background: var(--accent);
+            filter: blur(140px);
+            opacity: 0.06;
+            pointer-events: none;
+        }
+
+        .bottom-cta-title {
+            font-size: clamp(1.6rem, 3.5vw, 2.2rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin-bottom: 1rem;
+            color: var(--text);
+            position: relative;
+            z-index: 1;
+        }
+
+        .bottom-cta-sub {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            margin-bottom: 2.5rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .bottom-cta .hero-login {
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+            opacity: 1;
+            transform: none;
+            animation: none;
+        }
+
+        .bottom-cta .login-note {
+            opacity: 1;
+            animation: none;
+        }
+
+        /* ================================================
+           FOOTER
+           ================================================ */
+        .site-footer {
+            padding: 2.5rem 1.5rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .footer-inner {
+            max-width: 900px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .footer-copy {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 1.5rem;
+        }
+
+        .footer-link {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            transition: color 0.2s ease;
+        }
+
+        .footer-link:hover {
+            color: var(--text-secondary);
+        }
+
+        /* ================================================
+           ANIMATIONS
+           ================================================ */
+        @keyframes fadeUp {
+            to {
+                opacity: 1;
+                transform: translateY(0) translateX(0);
+            }
+        }
+
+        /* ================================================
+           RESPONSIVE
+           ================================================ */
+        @media (max-width: 768px) {
+            section {
+                padding: 4rem 1.25rem;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+
+            .feature-card,
+            .feature-card:nth-child(even) {
+                transform: translateY(30px);
+            }
+
+            .feature-card.visible {
+                transform: translateY(0);
+            }
+
+            .feature-card.visible:hover {
+                transform: translateY(-2px);
+            }
+
+            .steps {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .step:not(:last-child)::after {
+                display: none;
+            }
+
+            .stats-bar-inner {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 1.5rem;
+            }
+
+            .login-form {
+                flex-direction: column;
+            }
+
+            .login-btn {
+                width: 100%;
+            }
+
+            .footer-inner {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .hero-scroll-hint {
+                display: none;
+            }
+
+            .features, .how-it-works {
+                padding: 5rem 1.25rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .hero-title {
+                font-size: 2.8rem;
+            }
+
+            .stats-bar-inner {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 1rem;
+            }
+        }
+
+        /* Reduce motion for accessibility */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+
+            html { scroll-behavior: auto; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Background layers -->
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+    <div class="particles" id="particles"></div>
+
+    <!-- Content -->
+    <div class="content">
+
+        <!-- ==================== HERO ==================== -->
+        <section class="hero">
+            <div class="hero-badge">
+                <span class="hero-badge-dot"></span>
+                Live for 2026-27 NBA Season
+            </div>
+
+            <h1 class="hero-title">PropTerminal</h1>
+
+            <p class="hero-tagline">
+                Real-time NBA prop intelligence. <strong>Beat the books.</strong>
+            </p>
+
+            <div class="hero-login">
+                <form class="login-form" method="POST" action="/login">
+                    <input
+                        class="login-input"
+                        type="password"
+                        name="password"
+                        placeholder="Enter access code"
+                        autocomplete="current-password"
+                        autofocus
+                        required
+                    >
+                    <button type="submit" class="login-btn">Enter Terminal</button>
+                </form>
+                {% if error %}
+                <div class="login-error">{{ error }}</div>
+                {% endif %}
+                <p class="login-note">Access restricted. Contact for credentials.</p>
+            </div>
+
+            <div class="hero-scroll-hint">
+                <span>Scroll</span>
+                <div class="scroll-arrow"></div>
+            </div>
+        </section>
+
+        <!-- ==================== STATS BAR ==================== -->
+        <div class="stats-bar">
+            <div class="stats-bar-inner">
+                <div class="stat-item" data-animate>
+                    <div class="stat-number" data-count="19">0</div>
+                    <div class="stat-label">Sportsbooks</div>
+                </div>
+                <div class="stat-item" data-animate>
+                    <div class="stat-number" data-count="30" data-suffix="s">0s</div>
+                    <div class="stat-label">Refresh Rate</div>
+                </div>
+                <div class="stat-item" data-animate>
+                    <div class="stat-number" data-count="55" data-suffix="%+">0%+</div>
+                    <div class="stat-label">Model Accuracy</div>
+                </div>
+                <div class="stat-item" data-animate>
+                    <div class="stat-number" data-raw="LIVE">LIVE</div>
+                    <div class="stat-label">Real-time Odds</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== FEATURES ==================== -->
+        <section class="features">
+            <div class="section-inner">
+                <div class="features-header">
+                    <span class="section-label">Capabilities</span>
+                    <h2 class="section-title">The sharpest tools in the room</h2>
+                </div>
+
+                <div class="features-grid">
+                    <div class="feature-card" data-animate>
+                        <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>
+                        <h3 class="feature-title">19+ Books, One View</h3>
+                        <p class="feature-desc">
+                            Cross-book odds comparison across every major sportsbook. Instantly find the best available price on any player prop.
+                        </p>
+                    </div>
+
+                    <div class="feature-card" data-animate>
+                        <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+                        <h3 class="feature-title">Data-Driven Signals</h3>
+                        <p class="feature-desc">
+                            Built on 2,100+ NBA games and 87,000+ prop outcomes across two full seasons. Every signal is backtested and validated on unseen data.
+                        </p>
+                    </div>
+
+                    <div class="feature-card" data-animate>
+                        <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
+                        <h3 class="feature-title">30-Second Updates</h3>
+                        <p class="feature-desc">
+                            Projections and edges recalculate every 30 seconds as lines move. Never miss a window when the market shifts in your favor.
+                        </p>
+                    </div>
+
+                    <div class="feature-card" data-animate>
+                        <span class="feature-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+                        <h3 class="feature-title">Live In-Game</h3>
+                        <p class="feature-desc">
+                            Track player stats as games unfold. Automatic detection of blowout risk, foul trouble, and pace changes that shift prop value.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==================== HOW IT WORKS ==================== -->
+        <section class="how-it-works">
+            <div class="section-inner">
+                <div class="how-header">
+                    <span class="section-label">How It Works</span>
+                    <h2 class="section-title">From data to edge in seconds</h2>
+                </div>
+
+                <div class="steps">
+                    <div class="step" data-animate data-delay="0">
+                        <div class="step-number">1</div>
+                        <span class="step-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+                        <h3 class="step-title">Model analyzes every prop</h3>
+                        <p class="step-desc">
+                            ML models ingest player history, matchup data, pace, injuries, and usage to project every stat line.
+                        </p>
+                    </div>
+
+                    <div class="step" data-animate data-delay="150">
+                        <div class="step-number">2</div>
+                        <span class="step-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+                        <h3 class="step-title">Finds the best odds</h3>
+                        <p class="step-desc">
+                            Scans 19+ books simultaneously to surface the sharpest line available for each recommended bet.
+                        </p>
+                    </div>
+
+                    <div class="step" data-animate data-delay="300">
+                        <div class="step-number">3</div>
+                        <span class="step-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg></span>
+                        <h3 class="step-title">Updates every 30 seconds</h3>
+                        <p class="step-desc">
+                            Edges recalculate continuously. When lines move or game state changes, your dashboard updates instantly.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==================== BOTTOM CTA ==================== -->
+        <section class="bottom-cta">
+            <div class="bg-glow-bottom"></div>
+            <h2 class="bottom-cta-title">Enter the terminal.</h2>
+            <p class="bottom-cta-sub">Access restricted. Enter your code below.</p>
+            <div class="hero-login">
+                <form class="login-form" method="POST" action="/login">
+                    <input
+                        class="login-input"
+                        type="password"
+                        name="password"
+                        placeholder="Enter access code"
+                        autocomplete="current-password"
+                        required
+                    >
+                    <button type="submit" class="login-btn">Enter Terminal</button>
+                </form>
+                <p class="login-note">Access restricted. Contact for credentials.</p>
+            </div>
+        </section>
+
+        <!-- ==================== FOOTER ==================== -->
+        <footer class="site-footer">
+            <div class="footer-inner">
+                <span class="footer-copy">PropTerminal &copy; 2026</span>
+                <div class="footer-links">
+                    <a href="#" class="footer-link">About</a>
+                    <a href="#" class="footer-link">Contact</a>
+                </div>
+            </div>
+        </footer>
+
+    </div>
+
+    <!-- ==================== JAVASCRIPT ==================== -->
+    <script>
+        (function() {
+            'use strict';
+
+            /* ------- Floating particles ------- */
+            var particleContainer = document.getElementById('particles');
+            var PARTICLE_COUNT = 30;
+
+            for (var i = 0; i < PARTICLE_COUNT; i++) {
+                var p = document.createElement('div');
+                p.className = 'particle';
+                p.style.left = Math.random() * 100 + '%';
+                p.style.top = (60 + Math.random() * 40) + '%';
+                p.style.animationDuration = (8 + Math.random() * 14) + 's';
+                p.style.animationDelay = (Math.random() * 10) + 's';
+                p.style.width = (1 + Math.random() * 2) + 'px';
+                p.style.height = p.style.width;
+                p.style.opacity = String(0.1 + Math.random() * 0.4);
+                particleContainer.appendChild(p);
+            }
+
+            /* ------- Scroll-triggered animations (IntersectionObserver) ------- */
+            var animatedElements = document.querySelectorAll('[data-animate]');
+
+            if ('IntersectionObserver' in window) {
+                var observer = new IntersectionObserver(function(entries) {
+                    entries.forEach(function(entry) {
+                        if (entry.isIntersecting) {
+                            var el = entry.target;
+                            var delay = el.getAttribute('data-delay') || 0;
+
+                            setTimeout(function() {
+                                el.classList.add('visible');
+
+                                /* Count-up animation for stat numbers */
+                                var countEl = el.querySelector('[data-count]');
+                                if (countEl) {
+                                    animateCount(countEl);
+                                }
+                            }, parseInt(delay));
+
+                            observer.unobserve(el);
+                        }
+                    });
+                }, {
+                    threshold: 0.15,
+                    rootMargin: '0px 0px -40px 0px'
+                });
+
+                animatedElements.forEach(function(el) {
+                    observer.observe(el);
+                });
+            } else {
+                /* Fallback: show everything immediately */
+                animatedElements.forEach(function(el) {
+                    el.classList.add('visible');
+                });
+            }
+
+            /* ------- Count-up animation ------- */
+            function animateCount(el) {
+                var target = parseInt(el.getAttribute('data-count'));
+                var suffix = el.getAttribute('data-suffix') || '';
+                var raw = el.getAttribute('data-raw');
+
+                if (raw) {
+                    el.textContent = raw;
+                    return;
+                }
+
+                var duration = 1200;
+                var startTime = null;
+                var startVal = 0;
+
+                function step(timestamp) {
+                    if (!startTime) startTime = timestamp;
+                    var progress = Math.min((timestamp - startTime) / duration, 1);
+                    /* Ease out cubic */
+                    var eased = 1 - Math.pow(1 - progress, 3);
+                    var current = Math.round(startVal + (target - startVal) * eased);
+                    el.textContent = current + suffix;
+
+                    if (progress < 1) {
+                        requestAnimationFrame(step);
+                    }
+                }
+
+                requestAnimationFrame(step);
+            }
+
+            /* ------- Stagger feature card animations ------- */
+            var featureCards = document.querySelectorAll('.feature-card[data-animate]');
+            featureCards.forEach(function(card, index) {
+                card.setAttribute('data-delay', index * 120);
+            });
+
+            /* ------- Stagger stat items ------- */
+            var statItems = document.querySelectorAll('.stat-item[data-animate]');
+            statItems.forEach(function(item, index) {
+                item.setAttribute('data-delay', index * 100);
+            });
+
+        })();
+    </script>
+</body>
+</html>

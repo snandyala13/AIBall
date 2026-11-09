@@ -1,0 +1,996 @@
+{% extends "base.html" %}
+{% block title %}PropTerminal - Dashboard{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div class="header-row">
+        <h1 id="page-title">Games</h1>
+        <div class="date-picker-container">
+            <button class="btn btn-sm btn-outline" onclick="changeDate(-1)" title="Previous day (Left arrow)">&larr;</button>
+            <input type="date" id="date-picker" class="date-input" onchange="loadGames(this.value)">
+            <button class="btn btn-sm btn-outline" onclick="changeDate(1)" title="Next day (Right arrow)">&rarr;</button>
+            <button class="btn btn-sm btn-outline" onclick="goToday()">Today</button>
+        </div>
+    </div>
+    <div class="summary-stats" id="summary-stats">
+        <div class="stat-box">
+            <span class="stat-value mono" id="games-count">--</span>
+            <span class="stat-label">Games</span>
+        </div>
+        <div class="stat-box">
+            <span class="stat-value mono" id="picks-count">--</span>
+            <span class="stat-label">Picks Found</span>
+        </div>
+        <div class="stat-box">
+            <span class="stat-value mono" id="total-units">--</span>
+            <span class="stat-label">Total Units</span>
+        </div>
+        <button class="btn btn-primary" id="analyze-all-btn" onclick="analyzeAllGames()" style="display:none;">
+            Analyze All Games
+        </button>
+        <div class="analyze-progress" id="analyze-progress" style="display:none;">
+            <div class="spinner spinner-sm"></div>
+            <span id="analyze-progress-text">Analyzing 0/0 games...</span>
+            <div class="analyze-progress-bar">
+                <div class="analyze-progress-fill" id="analyze-progress-fill" style="width:0%"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bet Tracker Banner -->
+<div class="bet-tracker" id="bet-tracker" style="display:none;">
+    <span class="bet-tracker-title">Tonight's Bets</span>
+    <div class="bet-tracker-stats" id="bet-tracker-stats"></div>
+    <button class="btn-clear-tracker" onclick="clearBetTracker()">Clear</button>
+</div>
+
+<!-- Live Lines Controls -->
+<div class="live-controls" id="live-controls">
+    <label class="live-toggle">
+        <input type="checkbox" id="live-poll-toggle" onchange="toggleLivePolling(this.checked)">
+        <span>Live Lines</span>
+    </label>
+    <select class="interval-select" id="poll-interval-select" onchange="changePollInterval(this.value)">
+        <option value="30000">30s</option>
+        <option value="60000" selected>60s</option>
+        <option value="120000">2m</option>
+        <option value="300000">5m</option>
+    </select>
+    <span class="last-scan-badge" id="last-scan-badge" style="display:none;">
+        <span class="scan-dot"></span>
+        <span id="last-scan-text">Not scanning</span>
+    </span>
+</div>
+
+<!-- Live Lines Ticker -->
+<div id="live-ticker" class="live-ticker" style="display:none;">
+    <span class="ticker-label"><span class="ticker-dot"></span>LIVE</span>
+    <div id="ticker-items" class="ticker-items">
+        <span class="ticker-empty">Scanning for line movements...</span>
+    </div>
+    <span id="ticker-cross-book" style="display:none;"></span>
+    <span class="ticker-time" id="ticker-time">--</span>
+</div>
+
+<!-- Injury Cascade Alerts -->
+<div id="cascade-alerts-section" class="cascade-alerts" style="display:none;">
+    <div class="cascade-header" onclick="toggleCascadeDetails()">
+        <span class="cascade-icon">&#9888;</span>
+        <span class="cascade-title" id="cascade-title">Injury Cascades Active</span>
+        <span class="cascade-badge" id="cascade-count">0</span>
+        <span class="cascade-expand" id="cascade-expand-icon">&#9660;</span>
+    </div>
+    <div class="cascade-body" id="cascade-body" style="display:none;">
+        <div id="cascade-items"></div>
+    </div>
+</div>
+
+<!-- Hero Picks: Best Picks Right Now (live-updating) -->
+<div id="hero-picks-section" class="hero-picks" style="display:none;">
+    <div class="hero-picks-header">
+        <h2>Best Picks Right Now</h2>
+        <span class="hero-picks-subtitle" id="hero-picks-subtitle">Top picks across analyzed games</span>
+    </div>
+    <div id="hero-picks-grid" class="hero-grid"></div>
+</div>
+
+<!-- Old Top Picks (hidden, kept for backward compat) -->
+<div id="top-picks-section" class="top-picks-section" style="display:none;">
+    <div class="top-picks-header">
+        <h2>Top Picks</h2>
+        <span class="top-picks-subtitle" id="top-picks-subtitle">Best value across analyzed games</span>
+    </div>
+    <div id="top-picks-list" class="top-picks-list"></div>
+</div>
+
+<div id="games-loading" class="loading-container">
+    <div class="spinner"></div>
+    <p>Loading games...</p>
+</div>
+
+<div id="no-games" class="empty-state" style="display:none;">
+    <p>No games found for this date.</p>
+    <p class="text-muted">Try a different date, or check if the season has started.</p>
+</div>
+
+<!-- CLV Tracking Dashboard -->
+<div id="clv-section" class="clv-section" style="display:none;">
+    <div class="clv-header">
+        <h2>Closing Line Value (CLV)</h2>
+        <div class="clv-time-controls">
+            <button class="btn btn-sm clv-period-btn active" onclick="loadCLVReport('7d', this)">7 Days</button>
+            <button class="btn btn-sm clv-period-btn" onclick="loadCLVReport('30d', this)">30 Days</button>
+            <button class="btn btn-sm clv-period-btn" onclick="loadCLVReport('all', this)">All Time</button>
+        </div>
+    </div>
+
+    <!-- CLV Summary Cards -->
+    <div class="clv-summary-grid" id="clv-summary-grid">
+        <div class="clv-stat-card">
+            <span class="clv-stat-value mono" id="clv-avg-cents">--</span>
+            <span class="clv-stat-label">Avg CLV (cents)</span>
+            <span class="clv-stat-note" id="clv-cents-note">positive = beating the close</span>
+        </div>
+        <div class="clv-stat-card">
+            <span class="clv-stat-value mono" id="clv-beat-pct">--</span>
+            <span class="clv-stat-label">Beat Close %</span>
+            <span class="clv-stat-note">% of bets with positive CLV</span>
+        </div>
+        <div class="clv-stat-card">
+            <span class="clv-stat-value mono" id="clv-total-bets">--</span>
+            <span class="clv-stat-label">Tracked Bets</span>
+            <span class="clv-stat-note" id="clv-graded-note">-- graded</span>
+        </div>
+        <div class="clv-stat-card">
+            <span class="clv-stat-value mono" id="clv-win-rate">--</span>
+            <span class="clv-stat-label">Win Rate</span>
+            <span class="clv-stat-note" id="clv-profit-note">-- profit</span>
+        </div>
+    </div>
+
+    <!-- CLV by Prop Type -->
+    <div class="clv-breakdown" id="clv-by-prop" style="display:none;">
+        <h3>CLV by Prop Type</h3>
+        <div class="clv-table-container" id="clv-prop-table"></div>
+    </div>
+
+    <!-- CLV by Edge Bucket -->
+    <div class="clv-breakdown" id="clv-by-edge" style="display:none;">
+        <h3>CLV by Edge Threshold</h3>
+        <div class="clv-table-container" id="clv-edge-table"></div>
+    </div>
+
+    <!-- CLV Trend -->
+    <div class="clv-breakdown" id="clv-trend-section" style="display:none;">
+        <h3>CLV Trend</h3>
+        <div class="clv-trend-chart" id="clv-trend-chart"></div>
+    </div>
+
+    <!-- CLV vs Win Rate -->
+    <div class="clv-breakdown" id="clv-correlation-section" style="display:none;">
+        <h3>CLV vs Win Rate</h3>
+        <div class="clv-table-container" id="clv-correlation-table"></div>
+    </div>
+</div>
+
+<div class="games-grid" id="games-grid"></div>
+
+<!-- Parlay Builder Slip (sticky bottom) -->
+<div class="parlay-slip" id="parlay-slip" style="display:none;">
+    <div class="parlay-slip-inner">
+        <div class="parlay-slip-header">
+            <h3>Your Parlay</h3>
+            <div class="parlay-slip-actions">
+                <button class="btn-copy-parlay" id="parlay-copy-text" data-copy="" onclick="copyParlaySlip()">Copy Parlay</button>
+                <button class="btn-clear-parlay" onclick="clearParlaySlip()">Clear</button>
+            </div>
+        </div>
+        <div class="parlay-slip-legs" id="parlay-slip-legs"></div>
+        <div class="parlay-slip-summary">
+            <div class="parlay-slip-stat">
+                <span class="parlay-slip-stat-label">Combined Odds</span>
+                <span class="parlay-slip-stat-value" id="parlay-combined-odds">--</span>
+            </div>
+            <div class="parlay-slip-stat">
+                <span class="parlay-slip-stat-label">Win Probability</span>
+                <span class="parlay-slip-stat-value" id="parlay-win-prob">--</span>
+            </div>
+            <div class="parlay-slip-stat">
+                <span class="parlay-slip-stat-label">Edge</span>
+                <span class="parlay-slip-stat-value" id="parlay-edge">--</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Use local date, not UTC (games at 10pm ET are still "today" even after midnight UTC)
+var _now = new Date();
+var currentDate = _now.getFullYear() + '-' + String(_now.getMonth() + 1).padStart(2, '0') + '-' + String(_now.getDate()).padStart(2, '0');
+var analyzeTotal = 0;
+var analyzeDone = 0;
+
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('date-picker').value = currentDate;
+    loadGames(currentDate);
+    updateFooterTimestamp();
+    renderBetTracker();
+
+    // Auto-refresh: reload game data every 5 minutes (scores, status changes)
+    setInterval(function() {
+        var _n = new Date(); var today = _n.getFullYear() + '-' + String(_n.getMonth() + 1).padStart(2, '0') + '-' + String(_n.getDate()).padStart(2, '0');
+        if (currentDate === today) {
+            console.log('Auto-refreshing game data...');
+            fetch('/api/games?date=' + currentDate)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    var games = data.games || [];
+                    games.forEach(function(game) {
+                        var card = document.getElementById('game-card-' + game.game_id);
+                        if (!card) return;
+                        // Update score ticker
+                        var scoreTicker = card.querySelector('.live-score-ticker');
+                        var statusCat = game.status_category || 'upcoming';
+                        if (statusCat === 'live' && (game.home_score || game.away_score)) {
+                            if (!scoreTicker) {
+                                scoreTicker = document.createElement('div');
+                                scoreTicker.className = 'live-score-ticker';
+                                var cardHeader = card.querySelector('.card-header');
+                                if (cardHeader) cardHeader.after(scoreTicker);
+                            }
+                            scoreTicker.innerHTML =
+                                '<span class="score-away">' + game.away_abbreviation + ' ' + (game.away_score || 0) + '</span>' +
+                                '<span class="score-sep">-</span>' +
+                                '<span class="score-home">' + (game.home_score || 0) + ' ' + game.home_abbreviation + '</span>' +
+                                '<span class="score-status">LIVE</span>';
+                        }
+                        // Update status badge
+                        var statusEl = card.querySelector('.status-badge');
+                        if (statusEl) {
+                            if (statusCat === 'live') {
+                                statusEl.className = 'status-badge status-live';
+                                statusEl.innerHTML = '<span class="status-dot"></span>LIVE';
+                            } else if (statusCat === 'final') {
+                                statusEl.className = 'status-badge status-final';
+                                statusEl.textContent = 'FINAL';
+                                // Remove live score ticker on final
+                                if (scoreTicker) {
+                                    scoreTicker.innerHTML =
+                                        '<span class="score-away">' + game.away_abbreviation + ' ' + (game.away_score || 0) + '</span>' +
+                                        '<span class="score-sep">-</span>' +
+                                        '<span class="score-home">' + (game.home_score || 0) + ' ' + game.home_abbreviation + '</span>' +
+                                        '<span class="score-status" style="color:var(--text-muted)">FINAL</span>';
+                                }
+                            }
+                        }
+                        card.dataset.status = statusCat;
+                    });
+                    updateFooterTimestamp();
+                })
+                .catch(function() {});
+        }
+    }, 5 * 60 * 1000);
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        changeDate(-1);
+    } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        changeDate(1);
+    }
+});
+
+function updateFooterTimestamp() {
+    var el = document.getElementById('footer-timestamp');
+    if (el) {
+        var now = new Date();
+        el.textContent = 'Updated ' + now.toLocaleTimeString();
+    }
+}
+
+function changeDate(delta) {
+    var picker = document.getElementById('date-picker');
+    var d = new Date(picker.value + 'T12:00:00');
+    d.setDate(d.getDate() + delta);
+    var newDate = d.toISOString().split('T')[0];
+    picker.value = newDate;
+    currentDate = newDate;
+    loadGames(newDate);
+}
+
+function goToday() {
+    var today = new Date().toISOString().split('T')[0];
+    document.getElementById('date-picker').value = today;
+    currentDate = today;
+    loadGames(today);
+}
+
+function loadGames(dateStr) {
+    var loading = document.getElementById('games-loading');
+    var grid = document.getElementById('games-grid');
+    var noGames = document.getElementById('no-games');
+    loading.style.display = 'flex';
+    grid.innerHTML = '';
+    noGames.style.display = 'none';
+
+    // Reset state when changing dates
+    totalPicksFound = 0;
+    totalUnitsFound = 0;
+    allTopPicks = [];
+    analyzeTotal = 0;
+    analyzeDone = 0;
+    document.getElementById('picks-count').textContent = '--';
+    document.getElementById('total-units').textContent = '--';
+    document.getElementById('hero-picks-section').style.display = 'none';
+    document.getElementById('top-picks-section').style.display = 'none';
+    document.getElementById('analyze-progress').style.display = 'none';
+    updateNavStats();
+
+    var url = '/api/games' + (dateStr ? '?date=' + dateStr : '');
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            loading.style.display = 'none';
+            if (data.error) {
+                noGames.querySelector('p').textContent = 'Error: ' + data.error;
+                noGames.style.display = 'block';
+                return;
+            }
+            var games = data.games || [];
+            document.getElementById('games-count').textContent = games.length;
+
+            var _n = new Date(); var today = _n.getFullYear() + '-' + String(_n.getMonth() + 1).padStart(2, '0') + '-' + String(_n.getDate()).padStart(2, '0');
+            var title = document.getElementById('page-title');
+            if (dateStr === today || !dateStr) {
+                title.textContent = "Today's Games";
+            } else {
+                title.textContent = 'Games for ' + dateStr;
+            }
+
+            if (games.length === 0) {
+                noGames.style.display = 'block';
+                return;
+            }
+
+            document.getElementById('analyze-all-btn').style.display = 'inline-flex';
+
+            // Auto-analyze all games on page load (live by default)
+            setTimeout(function() {
+                var btn = document.getElementById('analyze-all-btn');
+                if (btn && !btn.disabled) {
+                    analyzeAllGames();
+                }
+            }, 500);
+
+            var hasPropline = games.some(function(g) { return g.propline_event_id; });
+            var plStatus = document.getElementById('footer-propline-status');
+            if (plStatus && hasPropline) {
+                plStatus.innerHTML = '<span class="footer-status-dot"></span> PropLine';
+            }
+
+            games.forEach(function(game) {
+                grid.appendChild(createGameCard(game));
+            });
+
+            updateFooterTimestamp();
+        })
+        .catch(function(err) {
+            loading.style.display = 'none';
+            noGames.querySelector('p').textContent = 'Error loading games: ' + err.message;
+            noGames.style.display = 'block';
+        });
+}
+
+function getNbaLogoUrl(abbreviation) {
+    var teamMap = {
+        'ATL': 1610612737, 'BOS': 1610612738, 'BKN': 1610612751, 'CHA': 1610612766,
+        'CHI': 1610612741, 'CLE': 1610612739, 'DAL': 1610612742, 'DEN': 1610612743,
+        'DET': 1610612765, 'GSW': 1610612744, 'HOU': 1610612745, 'IND': 1610612754,
+        'LAC': 1610612746, 'LAL': 1610612747, 'MEM': 1610612763, 'MIA': 1610612748,
+        'MIL': 1610612749, 'MIN': 1610612750, 'NOP': 1610612740, 'NYK': 1610612752,
+        'OKC': 1610612760, 'ORL': 1610612753, 'PHI': 1610612755, 'PHX': 1610612756,
+        'POR': 1610612757, 'SAC': 1610612758, 'SAS': 1610612759, 'TOR': 1610612761,
+        'UTA': 1610612762, 'WAS': 1610612764
+    };
+    var teamId = teamMap[abbreviation];
+    if (!teamId) return '';
+    return 'https://cdn.nba.com/logos/nba/' + teamId + '/global/L/logo.svg';
+}
+
+function createGameCard(game) {
+    var card = document.createElement('div');
+    card.className = 'game-card collapsed';
+    card.id = 'game-card-' + game.game_id;
+
+    var spreadStr = game.spread ? (game.spread > 0 ? '+' + game.spread.toFixed(1) : game.spread.toFixed(1)) : 'N/A';
+    var totalStr = game.total ? game.total.toFixed(1) : 'N/A';
+
+    // Status badge
+    var statusBadge = '';
+    var statusCat = game.status_category || 'upcoming';
+    if (statusCat === 'live') {
+        statusBadge = '<span class="status-badge status-live"><span class="status-dot"></span>LIVE</span>';
+    } else if (statusCat === 'final') {
+        statusBadge = '<span class="status-badge status-final">FINAL</span>';
+    } else {
+        statusBadge = '<span class="status-badge status-upcoming"><span class="status-clock">&#128339;</span>UPCOMING</span>';
+    }
+
+    // Injury badge
+    var injuryBadge = '';
+    if (game.injury_count > 0) {
+        injuryBadge = '<span class="injury-badge">' + game.injury_count + ' OUT</span>';
+    }
+
+    // Injury details
+    var injuryDetails = '';
+    var allInjuries = (game.home_injuries || []).concat(game.away_injuries || []);
+    var outPlayers = allInjuries.filter(function(i) { return i.status === 'out'; });
+    if (outPlayers.length > 0) {
+        injuryDetails = '<div class="injury-list">';
+        outPlayers.forEach(function(inj) {
+            injuryDetails += '<span class="injury-tag">' + inj.name + '</span>';
+        });
+        injuryDetails += '</div>';
+    }
+
+    // Team logos
+    var awayLogo = getNbaLogoUrl(game.away_abbreviation);
+    var homeLogo = getNbaLogoUrl(game.home_abbreviation);
+    var awayLogoHtml = awayLogo ? '<img src="' + awayLogo + '" alt="' + game.away_abbreviation + '" class="team-logo" onerror="this.style.display=\'none\'">' : '';
+    var homeLogoHtml = homeLogo ? '<img src="' + homeLogo + '" alt="' + game.home_abbreviation + '" class="team-logo" onerror="this.style.display=\'none\'">' : '';
+
+    // Live score ticker for live/final games
+    var liveScoreHtml = '';
+    if (statusCat === 'live' || statusCat === 'final') {
+        var homeScore = game.home_score || 0;
+        var awayScore = game.away_score || 0;
+        var statusLabel = statusCat === 'live' ? 'LIVE' : 'FINAL';
+        var statusColor = statusCat === 'live' ? 'color:var(--accent)' : 'color:var(--text-muted)';
+        liveScoreHtml =
+            '<div class="live-score-ticker">' +
+                '<span class="score-away">' + game.away_abbreviation + ' ' + awayScore + '</span>' +
+                '<span class="score-sep">-</span>' +
+                '<span class="score-home">' + homeScore + ' ' + game.home_abbreviation + '</span>' +
+                '<span class="score-status" style="' + statusColor + '">' + statusLabel + '</span>' +
+            '</div>';
+    }
+
+    card.innerHTML =
+        '<div class="card-header" onclick="toggleGameCard(this.parentElement)">' +
+            '<div class="matchup">' +
+                '<span class="team away-team">' + game.away_abbreviation + '</span>' +
+                '<span class="at-symbol">@</span>' +
+                '<span class="team home-team">' + game.home_abbreviation + '</span>' +
+            '</div>' +
+            '<div class="card-header-badges">' +
+                '<span class="picks-available-badge" style="display:none;">0 picks</span>' +
+                injuryBadge +
+                statusBadge +
+                '<span class="card-expand-hint">tap to expand</span>' +
+            '</div>' +
+        '</div>' +
+        liveScoreHtml +
+        '<div class="card-teams">' +
+            '<div class="team-info away-info">' +
+                '<div class="team-name-block"><span class="team-full">' + game.away_team + '</span></div>' +
+                awayLogoHtml +
+            '</div>' +
+            '<span class="vs-label">at</span>' +
+            '<div class="team-info">' +
+                homeLogoHtml +
+                '<div class="team-name-block"><span class="team-full">' + game.home_team + '</span></div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="card-odds">' +
+            '<div class="odds-pill">' +
+                '<span class="odds-label">Spread</span>' +
+                '<span class="odds-value mono">' + spreadStr + '</span>' +
+            '</div>' +
+            '<div class="odds-pill">' +
+                '<span class="odds-label">Total</span>' +
+                '<span class="odds-value mono">' + totalStr + '</span>' +
+            '</div>' +
+        '</div>' +
+        injuryDetails +
+        '<div class="card-actions">' +
+            '<button class="btn btn-primary btn-analyze" onclick="event.stopPropagation(); analyzeGame(' + game.game_id + ')">' +
+                'Analyze Game' +
+            '</button>' +
+            '<a href="/game/' + game.game_id + '" class="btn btn-outline btn-detail" onclick="event.stopPropagation()">Full Detail</a>' +
+        '</div>' +
+        '<div class="card-results" id="results-' + game.game_id + '"></div>';
+
+    card.dataset.status = statusCat;
+    card.dataset.gameId = game.game_id;
+    if (game.propline_event_id) {
+        card.dataset.proplineEventId = game.propline_event_id;
+    }
+
+    return card;
+}
+
+function toggleGameCard(card) {
+    card.classList.toggle('collapsed');
+    var hint = card.querySelector('.card-expand-hint');
+    if (hint) {
+        hint.textContent = card.classList.contains('collapsed') ? 'tap to expand' : 'tap to collapse';
+    }
+}
+
+function analyzeAllGames() {
+    var btn = document.getElementById('analyze-all-btn');
+    btn.disabled = true;
+    btn.style.display = 'none';
+
+    var cards = document.querySelectorAll('.game-card');
+    var gameIds = [];
+    cards.forEach(function(card) {
+        var id = card.id.replace('game-card-', '');
+        gameIds.push(parseInt(id));
+        var analyzeBtn = card.querySelector('.btn-analyze');
+        var container = document.getElementById('results-' + id);
+        if (analyzeBtn && !analyzeBtn.disabled) {
+            analyzeBtn.disabled = true;
+            analyzeBtn.textContent = 'Queued...';
+            container.innerHTML =
+                '<div class="skeleton-loader">' +
+                    '<div class="skeleton-line"></div>' +
+                    '<div class="skeleton-line"></div>' +
+                    '<div class="skeleton-line"></div>' +
+                    '<div class="skeleton-line"></div>' +
+                '</div>';
+            // Expand the card to show loading
+            card.classList.remove('collapsed');
+            var hint = card.querySelector('.card-expand-hint');
+            if (hint) hint.textContent = 'tap to collapse';
+        }
+    });
+
+    analyzeTotal = gameIds.length;
+    analyzeDone = 0;
+    updateAnalyzeProgress();
+
+    fetch('/api/analyze-all?date=' + currentDate, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            gameIds.forEach(function(gid) {
+                pollGameResult(gid);
+            });
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.style.display = 'inline-flex';
+            btn.textContent = 'Analyze All Games';
+            document.getElementById('analyze-progress').style.display = 'none';
+            alert('Error: ' + err.message);
+        });
+}
+
+function updateAnalyzeProgress() {
+    var progress = document.getElementById('analyze-progress');
+    var text = document.getElementById('analyze-progress-text');
+    var fill = document.getElementById('analyze-progress-fill');
+
+    if (analyzeTotal > 0 && analyzeDone < analyzeTotal) {
+        progress.style.display = 'inline-flex';
+        text.textContent = 'Analyzing ' + analyzeDone + '/' + analyzeTotal + ' games...';
+        fill.style.width = Math.round((analyzeDone / analyzeTotal) * 100) + '%';
+    } else if (analyzeDone >= analyzeTotal && analyzeTotal > 0) {
+        progress.style.display = 'none';
+    }
+}
+
+function pollGameResult(gameId, attempts) {
+    attempts = attempts || 0;
+    if (attempts > 20) {
+        var container = document.getElementById('results-' + gameId);
+        if (container) container.innerHTML = '<div class="results-error">Analysis timed out</div>';
+        analyzeDone++;
+        updateAnalyzeProgress();
+        checkAllDone();
+        return;
+    }
+
+    setTimeout(function() {
+        fetch('/api/game/' + gameId + '/analyze')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error && data.error.indexOf('not found') === -1) {
+                    var card = document.getElementById('game-card-' + gameId);
+                    var analyzeBtn = card ? card.querySelector('.btn-analyze') : null;
+                    if (analyzeBtn) analyzeBtn.textContent = 'Analyzing...';
+                    pollGameResult(gameId, attempts + 1);
+                    return;
+                }
+
+                var card = document.getElementById('game-card-' + gameId);
+                var container = document.getElementById('results-' + gameId);
+                var analyzeBtn = card ? card.querySelector('.btn-analyze') : null;
+
+                if (analyzeBtn) {
+                    analyzeBtn.disabled = false;
+                    analyzeBtn.textContent = 'Re-Analyze';
+                }
+
+                if (data.error) {
+                    if (container) container.innerHTML = '<div class="results-error">' + data.error + '</div>';
+                } else {
+                    if (container) renderInlineResults(container, data);
+                    updateSummaryStats(data);
+                    collectTopPicks(data, gameId);
+
+                    // Update picks available badge
+                    var picksCount = 0;
+                    var v2Preds = (data.v2_predictions || []).filter(function(p) {
+                        return p.edge_percent > 0 && p.side !== 'pass';
+                    });
+                    picksCount = v2Preds.length || ((data.best_singles || []).length + (data.popoff_singles || []).length);
+                    var picksBadge = card ? card.querySelector('.picks-available-badge') : null;
+                    if (picksBadge && picksCount > 0) {
+                        picksBadge.textContent = picksCount + ' picks';
+                        picksBadge.style.display = 'inline-flex';
+                    }
+
+                    if (card && card.dataset.status === 'final') {
+                        fetchGameResults(gameId, container);
+                    }
+                }
+
+                analyzeDone++;
+                updateAnalyzeProgress();
+                checkAllDone();
+            })
+            .catch(function() {
+                pollGameResult(gameId, attempts + 1);
+            });
+    }, 3000);
+}
+
+function fetchGameResults(gameId, container) {
+    fetch('/api/game/' + gameId + '/results')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) return;
+            renderGradedResults(container, data);
+        })
+        .catch(function() {});
+}
+
+function renderGradedResults(container, data) {
+    var results = data.results || [];
+    var summary = data.summary || {};
+    if (results.length === 0) return;
+
+    var profitClass = summary.total_profit >= 0 ? 'positive' : 'negative';
+    var profitStr = summary.total_profit >= 0 ? '+$' + (summary.total_profit * 100).toFixed(0) : '-$' + Math.abs(summary.total_profit * 100).toFixed(0);
+
+    var html =
+        '<div class="result-section">' +
+            '<div class="result-section-title">Graded Results</div>' +
+            '<div class="graded-results-summary">' +
+                '<div class="graded-results-stats">' +
+                    '<span class="graded-stat-hit">' + summary.hits + ' Hits</span>' +
+                    '<span class="graded-stat-miss">' + summary.misses + ' Misses</span>' +
+                    (summary.pushes > 0 ? '<span>' + summary.pushes + ' Pushes</span>' : '') +
+                    '<span class="mono">' + summary.hits + '/' + summary.total + ' (' + summary.hit_rate.toFixed(1) + '%)</span>' +
+                '</div>' +
+                '<span class="graded-profit ' + profitClass + ' mono">' + profitStr + '</span>' +
+            '</div>';
+
+    results.forEach(function(r) {
+        var icon, iconClass, rowClass;
+        if (r.push) {
+            icon = '&#8722;'; iconClass = 'push'; rowClass = 'push';
+        } else if (r.hit) {
+            icon = '&#10003;'; iconClass = 'hit'; rowClass = 'hit';
+        } else {
+            icon = '&#10007;'; iconClass = 'miss'; rowClass = 'miss';
+        }
+
+        var actualStr = r.actual.toFixed(1) + ' vs ' + r.line.toFixed(1);
+
+        html +=
+            '<div class="graded-result-row ' + rowClass + '">' +
+                '<span class="graded-result-icon ' + iconClass + '">' + icon + '</span>' +
+                '<div class="graded-result-info">' +
+                    '<span class="graded-result-player">' + r.player + '</span>' +
+                    '<span class="graded-result-detail">' + formatPropType(r.prop_type) + ' | ' + actualStr + '</span>' +
+                '</div>' +
+                '<span class="graded-result-actual mono">' + actualStr + '</span>' +
+            '</div>';
+    });
+
+    html += '</div>';
+    container.innerHTML += html;
+
+    var card = container.closest('.game-card');
+    if (card) {
+        var badges = card.querySelector('.card-header-badges');
+        if (badges) {
+            var badgeClass = summary.hit_rate >= 50 ? 'results-badge-positive' : 'results-badge-negative';
+            var badge = document.createElement('span');
+            badge.className = 'results-badge ' + badgeClass;
+            badge.textContent = summary.hits + '/' + summary.total + ' hit';
+            badges.appendChild(badge);
+        }
+    }
+}
+
+function checkAllDone() {
+    var btn = document.getElementById('analyze-all-btn');
+    var loading = document.querySelectorAll('.skeleton-loader');
+    if (loading.length === 0 && btn) {
+        btn.disabled = false;
+        btn.style.display = 'inline-flex';
+        btn.textContent = 'Re-Analyze All';
+        document.getElementById('analyze-progress').style.display = 'none';
+        updateFooterTimestamp();
+    }
+}
+
+/* =====================================================
+   LIVE POLLING CONTROLS (dashboard-specific)
+   ===================================================== */
+
+function toggleLivePolling(enabled) {
+    if (enabled) {
+        startLivePolling();
+        document.getElementById('last-scan-badge').style.display = 'inline-flex';
+        document.getElementById('last-scan-text').textContent = 'Starting...';
+        try { localStorage.setItem('aiBall_livePolling', 'on'); } catch(e) {}
+    } else {
+        stopLivePolling();
+        document.getElementById('live-ticker').style.display = 'none';
+        document.getElementById('last-scan-badge').style.display = 'none';
+        try { localStorage.setItem('aiBall_livePolling', 'off'); } catch(e) {}
+    }
+}
+
+function changePollInterval(ms) {
+    ms = parseInt(ms, 10);
+    if (isNaN(ms) || ms < 10000) ms = 60000;
+    setLivePollInterval(ms);
+    try { localStorage.setItem('aiBall_pollInterval', String(ms)); } catch(e) {}
+}
+
+// Restore saved preferences on load
+(function restoreLivePrefs() {
+    try {
+        var savedInterval = localStorage.getItem('aiBall_pollInterval');
+        if (savedInterval) {
+            var ms = parseInt(savedInterval, 10);
+            if (!isNaN(ms) && ms >= 10000) {
+                LIVE_POLL_INTERVAL = ms;
+                var sel = document.getElementById('poll-interval-select');
+                if (sel) sel.value = String(ms);
+            }
+        }
+
+        // Auto-start live polling by default (real-time edge recalc is cheap)
+        var savedPolling = localStorage.getItem('aiBall_livePolling');
+        if (savedPolling !== 'off') {
+            var toggle = document.getElementById('live-poll-toggle');
+            if (toggle) {
+                toggle.checked = true;
+                setTimeout(function() { toggleLivePolling(true); }, 1000);
+            }
+        }
+    } catch(e) {}
+})();
+
+
+/* =====================================================
+   CLV TRACKING DASHBOARD
+   ===================================================== */
+
+// Load CLV data on page load
+(function initCLV() {
+    setTimeout(function() {
+        loadCLVReport('7d');
+    }, 2000);
+})();
+
+function loadCLVReport(period, btn) {
+    // Update active button state
+    if (btn) {
+        var allBtns = document.querySelectorAll('.clv-period-btn');
+        allBtns.forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+    }
+
+    var url;
+    if (period === '7d') {
+        url = '/api/clv-report?days=7';
+    } else if (period === '30d') {
+        url = '/api/clv-report?days=30';
+    } else {
+        url = '/api/clv-report';
+    }
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) return;
+            renderCLVDashboard(data);
+        })
+        .catch(function(err) {
+            console.error('CLV load error:', err);
+        });
+}
+
+function renderCLVDashboard(data) {
+    var section = document.getElementById('clv-section');
+    if (!section) return;
+
+    // Show section if we have any data at all (even 0 bets -- shows tracking is active)
+    section.style.display = 'block';
+
+    var totalBets = data.total_bets || 0;
+    var totalGraded = data.total_graded || 0;
+
+    // Summary cards
+    var avgCents = data.avg_clv_cents || 0;
+    var centsEl = document.getElementById('clv-avg-cents');
+    if (centsEl) {
+        centsEl.textContent = avgCents > 0 ? '+' + avgCents.toFixed(1) : avgCents.toFixed(1);
+        centsEl.className = 'clv-stat-value mono ' + (avgCents > 0 ? 'positive' : avgCents < 0 ? 'negative' : '');
+    }
+    var centsNote = document.getElementById('clv-cents-note');
+    if (centsNote) {
+        centsNote.textContent = avgCents > 0 ? 'beating the closing line' : avgCents < 0 ? 'losing to the close' : 'positive = beating the close';
+    }
+
+    var beatPct = data.pct_beat_close || 0;
+    var beatEl = document.getElementById('clv-beat-pct');
+    if (beatEl) {
+        beatEl.textContent = totalBets > 0 ? (beatPct * 100).toFixed(1) + '%' : '--';
+        beatEl.className = 'clv-stat-value mono ' + (beatPct >= 0.5 ? 'positive' : 'negative');
+    }
+
+    var totalEl = document.getElementById('clv-total-bets');
+    if (totalEl) totalEl.textContent = totalBets;
+    var gradedNote = document.getElementById('clv-graded-note');
+    if (gradedNote) gradedNote.textContent = totalGraded + ' graded';
+
+    var winRate = data.win_rate;
+    var winEl = document.getElementById('clv-win-rate');
+    if (winEl) {
+        winEl.textContent = winRate !== null && winRate !== undefined ? (winRate * 100).toFixed(1) + '%' : '--';
+        if (winRate !== null && winRate !== undefined) {
+            winEl.className = 'clv-stat-value mono ' + (winRate >= 0.5 ? 'positive' : 'negative');
+        }
+    }
+    var profitNote = document.getElementById('clv-profit-note');
+    if (profitNote) {
+        var tp = data.total_profit || 0;
+        profitNote.textContent = tp >= 0 ? '+' + tp.toFixed(1) + 'u profit' : tp.toFixed(1) + 'u profit';
+    }
+
+    // CLV by Prop Type table
+    var byProp = data.by_prop_type || {};
+    var propKeys = Object.keys(byProp);
+    if (propKeys.length > 0) {
+        var propSection = document.getElementById('clv-by-prop');
+        propSection.style.display = 'block';
+        var propTable = document.getElementById('clv-prop-table');
+        var html = '<table class="clv-table"><thead><tr>' +
+            '<th>Prop</th><th>Bets</th><th>Avg CLV</th><th>Beat %</th><th>Win Rate</th>' +
+            '</tr></thead><tbody>';
+        propKeys.sort(function(a, b) { return (byProp[b].avg_clv_cents || 0) - (byProp[a].avg_clv_cents || 0); });
+        propKeys.forEach(function(pt) {
+            var d = byProp[pt];
+            var clvClass = (d.avg_clv_cents || 0) > 0 ? 'positive' : (d.avg_clv_cents || 0) < 0 ? 'negative' : '';
+            var wrText = d.win_rate !== null && d.win_rate !== undefined ? (d.win_rate * 100).toFixed(1) + '%' : '--';
+            html += '<tr>' +
+                '<td>' + formatPropType(pt) + '</td>' +
+                '<td class="mono">' + d.count + '</td>' +
+                '<td class="mono ' + clvClass + '">' + (d.avg_clv_cents > 0 ? '+' : '') + (d.avg_clv_cents || 0).toFixed(1) + '</td>' +
+                '<td class="mono">' + ((d.pct_beat_close || 0) * 100).toFixed(0) + '%</td>' +
+                '<td class="mono">' + wrText + '</td>' +
+                '</tr>';
+        });
+        html += '</tbody></table>';
+        propTable.innerHTML = html;
+    }
+
+    // CLV by Edge Bucket
+    var byEdge = data.by_edge_bucket || {};
+    var edgeKeys = Object.keys(byEdge);
+    if (edgeKeys.length > 0) {
+        var edgeSection = document.getElementById('clv-by-edge');
+        edgeSection.style.display = 'block';
+        var edgeTable = document.getElementById('clv-edge-table');
+        var edgeOrder = ['0-3%', '3-5%', '5-8%', '8-12%', '12%+'];
+        var html2 = '<table class="clv-table"><thead><tr>' +
+            '<th>Edge</th><th>Bets</th><th>Avg CLV</th><th>Beat %</th><th>Win Rate</th>' +
+            '</tr></thead><tbody>';
+        edgeOrder.forEach(function(bucket) {
+            var d = byEdge[bucket];
+            if (!d) return;
+            var clvClass = (d.avg_clv_cents || 0) > 0 ? 'positive' : (d.avg_clv_cents || 0) < 0 ? 'negative' : '';
+            var wrText = d.win_rate !== null && d.win_rate !== undefined ? (d.win_rate * 100).toFixed(1) + '%' : '--';
+            html2 += '<tr>' +
+                '<td>' + bucket + '</td>' +
+                '<td class="mono">' + d.count + '</td>' +
+                '<td class="mono ' + clvClass + '">' + (d.avg_clv_cents > 0 ? '+' : '') + (d.avg_clv_cents || 0).toFixed(1) + '</td>' +
+                '<td class="mono">' + ((d.pct_beat_close || 0) * 100).toFixed(0) + '%</td>' +
+                '<td class="mono">' + wrText + '</td>' +
+                '</tr>';
+        });
+        html2 += '</tbody></table>';
+        edgeTable.innerHTML = html2;
+    }
+
+    // CLV Daily Trend
+    var trend = data.daily_trend || [];
+    if (trend.length > 1) {
+        var trendSection = document.getElementById('clv-trend-section');
+        trendSection.style.display = 'block';
+        renderCLVTrend(trend);
+    }
+
+    // CLV vs Win Rate Correlation
+    var correlation = data.clv_win_correlation;
+    if (correlation && correlation.length > 0) {
+        var corrSection = document.getElementById('clv-correlation-section');
+        corrSection.style.display = 'block';
+        var corrTable = document.getElementById('clv-correlation-table');
+        var html3 = '<table class="clv-table"><thead><tr>' +
+            '<th>CLV Range</th><th>Bets</th><th>Win Rate</th>' +
+            '</tr></thead><tbody>';
+        correlation.forEach(function(row) {
+            var wrClass = row.win_rate >= 0.5 ? 'positive' : 'negative';
+            html3 += '<tr>' +
+                '<td>' + row.clv_bucket + ' cents</td>' +
+                '<td class="mono">' + row.count + '</td>' +
+                '<td class="mono ' + wrClass + '">' + (row.win_rate * 100).toFixed(1) + '%</td>' +
+                '</tr>';
+        });
+        html3 += '</tbody></table>';
+        corrTable.innerHTML = html3;
+    }
+}
+
+function renderCLVTrend(trend) {
+    var container = document.getElementById('clv-trend-chart');
+    if (!container) return;
+
+    // Simple bar chart using HTML/CSS
+    var maxAbs = 0;
+    trend.forEach(function(d) {
+        var abs = Math.abs(d.avg_clv_cents || 0);
+        if (abs > maxAbs) maxAbs = abs;
+    });
+    if (maxAbs === 0) maxAbs = 1;
+
+    var html = '<div class="clv-trend-bars">';
+    // Show last 14 days max
+    var displayTrend = trend.slice(-14);
+    displayTrend.forEach(function(d) {
+        var clv = d.avg_clv_cents || 0;
+        var pct = Math.abs(clv) / maxAbs * 100;
+        var barClass = clv >= 0 ? 'clv-bar-positive' : 'clv-bar-negative';
+        var dateLabel = d.date.slice(5); // MM-DD
+        html += '<div class="clv-trend-bar-group">' +
+            '<div class="clv-trend-bar-container">' +
+                '<div class="clv-trend-bar ' + barClass + '" style="height:' + Math.max(pct, 5) + '%" title="' + dateLabel + ': ' + clv.toFixed(1) + ' cents CLV">' +
+                    '<span class="clv-trend-bar-value">' + (clv > 0 ? '+' : '') + clv.toFixed(1) + '</span>' +
+                '</div>' +
+            '</div>' +
+            '<span class="clv-trend-bar-date">' + dateLabel + '</span>' +
+        '</div>';
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,420 @@
+{
+    "_comment": "Adjustment config for tracking, PBP, and CTG adjustments in model_engine.py. All thresholds/multipliers are here for easy A/B testing. Set 'enabled' to false to disable any individual adjustment or entire category.",
+    "version": "2.0",
+
+    "tracking": {
+        "enabled": false,
+        "max_total_adjustment": 2.0,
+
+        "points": {
+            "drives": {
+                "enabled": true,
+                "league_avg": 8.0,
+                "scale": 0.04,
+                "efficiency_default": 0.45,
+                "efficiency_scale": 1.5,
+                "cap": 1.5,
+                "confidence": 0.2,
+                "_comment": "More drives = more scoring opportunities. Scale is per-drive above/below league avg."
+            },
+            "catch_shoot": {
+                "enabled": true,
+                "min_pct": 0.40,
+                "league_avg_pct": 0.38,
+                "scale": 0.25,
+                "cap": 1.0,
+                "confidence": 0.15,
+                "_comment": "Catch-and-shoot efficiency vs league avg. Only activates above min_pct threshold."
+            },
+            "pull_up": {
+                "enabled": false,
+                "min_pct": 0.42,
+                "league_avg_pct": 0.40,
+                "scale": 0.2,
+                "cap": 1.0,
+                "confidence": 0.1,
+                "_comment": "DISABLED: High variance, small sample. Pull-up shooting adjustment."
+            },
+            "free_throws": {
+                "enabled": true,
+                "league_avg_fta": 1.5,
+                "scale": 0.3,
+                "neg_cap": -0.5,
+                "pos_cap": 1.0,
+                "confidence": 0.1,
+                "_comment": "FTA from drives above/below league average."
+            }
+        },
+
+        "assists": {
+            "potential_assists": {
+                "enabled": true,
+                "positive_gap_threshold": 1.5,
+                "positive_scale": 0.25,
+                "positive_cap": 1.5,
+                "positive_confidence": 0.25,
+                "negative_gap_threshold": -0.5,
+                "negative_scale": 0.2,
+                "negative_cap": -1.0,
+                "negative_confidence": 0.15,
+                "_comment": "Gap between potential assists and actual: regression toward mean."
+            },
+            "passing_efficiency": {
+                "enabled": true,
+                "league_avg_pct": 5.5,
+                "scale": 0.15,
+                "cap": 0.75,
+                "confidence": 0.15,
+                "_comment": "Assist-to-pass percentage vs league average (~5-6%)."
+            },
+            "drive_assists": {
+                "enabled": true,
+                "min_val": 0.5,
+                "scale": 0.3,
+                "cap": 0.75,
+                "confidence": 0.1,
+                "_comment": "Drive assists above threshold indicate playmaking off drives."
+            }
+        },
+
+        "rebounds": {
+            "dreb_chances": {
+                "enabled": true,
+                "league_avg_pct": 15.0,
+                "scale": 0.08,
+                "cap": 0.5,
+                "confidence": 0.2,
+                "_comment": "DREB chance percentage vs league average (~15%). Cap reduced from 1.5."
+            },
+            "oreb_chances": {
+                "enabled": true,
+                "league_avg_pct": 3.5,
+                "scale": 0.15,
+                "cap": 0.3,
+                "confidence": 0.15,
+                "_comment": "OREB chance percentage vs league average (~3-4%). Cap reduced from 0.75."
+            },
+            "box_outs": {
+                "enabled": false,
+                "league_avg": 2.0,
+                "scale": 0.1,
+                "cap": 0.3,
+                "confidence": 0.1,
+                "_comment": "DISABLED: Too noisy. Box outs as effort/positioning metric."
+            },
+            "avg_reb_dist": {
+                "enabled": false,
+                "neutral_dist": 5.0,
+                "scale": 0.15,
+                "cap": 0.3,
+                "confidence": 0.05,
+                "_comment": "DISABLED: Too noisy. Average rebound distance (lower = more aggressive)."
+            }
+        },
+
+        "steals": {
+            "deflections": {
+                "enabled": true,
+                "league_avg": 2.5,
+                "scale": 0.1,
+                "neg_cap": -0.3,
+                "pos_cap": 0.3,
+                "confidence": 0.25,
+                "_comment": "Deflections vs league average (~2-3 per game)."
+            },
+            "loose_balls": {
+                "enabled": false,
+                "league_avg": 0.5,
+                "scale": 0.15,
+                "neg_cap": -0.15,
+                "pos_cap": 0.25,
+                "confidence": 0.1,
+                "_comment": "DISABLED: Too noisy. Loose balls recovered as hustle metric."
+            }
+        },
+
+        "blocks": {
+            "contested_shots": {
+                "enabled": true,
+                "league_avg": 4.0,
+                "scale": 0.03,
+                "neg_cap": -0.2,
+                "pos_cap": 0.2,
+                "confidence": 0.2,
+                "_comment": "Contested shots vs league average (~4 per game). Cap reduced from 0.3."
+            },
+            "rim_defense": {
+                "enabled": true,
+                "league_avg_fga": 3.0,
+                "scale": 0.04,
+                "neg_cap": -0.15,
+                "pos_cap": 0.2,
+                "confidence": 0.15,
+                "_comment": "FGA defended at rim above league average."
+            }
+        },
+
+        "threes": {
+            "catch_shoot_3pct": {
+                "enabled": true,
+                "league_avg": 0.37,
+                "scale": 0.1,
+                "neg_cap": -0.3,
+                "pos_cap": 0.5,
+                "confidence": 0.2,
+                "_comment": "Catch-and-shoot 3P% vs league average (~37%)."
+            },
+            "pull_up_3pct": {
+                "enabled": false,
+                "min_fga": 2.0,
+                "league_avg": 0.33,
+                "scale": 0.05,
+                "neg_cap": -0.2,
+                "pos_cap": 0.3,
+                "confidence": 0.1,
+                "_comment": "DISABLED: High variance. Pull-up 3P% adjustment."
+            }
+        }
+    },
+
+    "pbp": {
+        "enabled": false,
+        "max_total_adjustment": 1.5,
+
+        "points": {
+            "shot_quality": {
+                "enabled": false,
+                "_comment": "DISABLED: The old formula (shot_quality_avg * 2) was mathematically wrong for TS% conversion. Re-enable only after proper calibration with backtest data."
+            },
+            "rim_efficiency": {
+                "enabled": true,
+                "league_avg_pct": 0.63,
+                "scale": 0.3,
+                "neg_cap": -0.75,
+                "pos_cap": 1.0,
+                "confidence": 0.1,
+                "_comment": "At-rim FG% vs league average (~63%)."
+            },
+            "self_oreb_points": {
+                "enabled": true,
+                "league_avg": 0.3,
+                "scale": 0.5,
+                "neg_cap": -0.3,
+                "pos_cap": 0.5,
+                "confidence": 0.05,
+                "_comment": "Self-offensive rebounds (ownmiss) create second-chance points."
+            }
+        },
+
+        "assists": {
+            "playmaker": {
+                "enabled": true,
+                "assisted_threshold": 0.50,
+                "scale": 1.5,
+                "cap": 0.75,
+                "confidence": 0.15,
+                "_comment": "Low assisted % = more self-creation = likely creating for others."
+            },
+            "rim_assists": {
+                "enabled": true,
+                "league_avg": 1.5,
+                "scale": 0.2,
+                "neg_cap": -0.3,
+                "pos_cap": 0.5,
+                "confidence": 0.1,
+                "_comment": "At-rim assists indicate drive-and-kick ability."
+            }
+        },
+
+        "rebounds": {
+            "self_oreb": {
+                "enabled": true,
+                "league_avg": 0.3,
+                "scale": 0.75,
+                "neg_cap": -0.25,
+                "pos_cap": 0.5,
+                "confidence": 0.15,
+                "_comment": "Self-offensive rebounds indicate rebounding effort."
+            },
+            "dreb_pct": {
+                "enabled": true,
+                "league_avg": 0.15,
+                "scale": 3.0,
+                "neg_cap": -0.5,
+                "pos_cap": 1.0,
+                "confidence": 0.15,
+                "_comment": "Defensive rebound % from PBP vs league average (~15%)."
+            }
+        },
+
+        "steals": {
+            "bad_pass_steals": {
+                "enabled": true,
+                "league_avg": 0.3,
+                "scale": 0.3,
+                "neg_cap": -0.2,
+                "pos_cap": 0.3,
+                "confidence": 0.2,
+                "_comment": "Bad pass steals = anticipation and active hands."
+            },
+            "lost_ball_steals": {
+                "enabled": true,
+                "league_avg": 0.2,
+                "scale": 0.25,
+                "neg_cap": -0.15,
+                "pos_cap": 0.2,
+                "confidence": 0.1,
+                "_comment": "Lost ball steals = gambling/aggressive defense."
+            }
+        },
+
+        "blocks": {
+            "fg2a_blocked_pct": {
+                "enabled": true,
+                "league_avg": 0.10,
+                "scale": 1.5,
+                "neg_cap": -0.2,
+                "pos_cap": 0.3,
+                "confidence": 0.2,
+                "_comment": "FG2A blocked percentage indicates rim protection ability."
+            }
+        },
+
+        "threes": {
+            "corner3": {
+                "enabled": true,
+                "league_avg_pct": 0.39,
+                "scale": 0.15,
+                "neg_cap": -0.2,
+                "pos_cap": 0.3,
+                "confidence": 0.1,
+                "_comment": "Corner 3 efficiency vs league average (~39%)."
+            },
+            "arc3": {
+                "enabled": true,
+                "league_avg_pct": 0.35,
+                "scale": 0.05,
+                "neg_cap": -0.2,
+                "pos_cap": 0.3,
+                "confidence": 0.1,
+                "_comment": "Above-the-break arc 3 efficiency vs league average (~35%)."
+            }
+        },
+
+        "turnovers": {
+            "bad_pass_turnovers": {
+                "enabled": false,
+                "league_avg": 0.8,
+                "scale": 0.3,
+                "neg_cap": -0.3,
+                "pos_cap": 0.4,
+                "confidence": 0.15,
+                "_comment": "DISABLED: Turnovers prop is not commonly bet. Bad pass turnovers."
+            },
+            "lost_ball_turnovers": {
+                "enabled": false,
+                "league_avg": 0.6,
+                "scale": 0.25,
+                "neg_cap": -0.25,
+                "pos_cap": 0.35,
+                "confidence": 0.1,
+                "_comment": "DISABLED: Turnovers prop is not commonly bet. Lost ball turnovers."
+            }
+        }
+    },
+
+    "ctg": {
+        "enabled": false,
+        "max_total_adjustment": 1.0,
+        "percentile_scale": 0.03,
+        "_comment_percentile": "Percentiles are uniform [0,100], not normal. We treat them as linear deviation from median: (pct - 50)/100 gives [-0.5, +0.5] range, then multiply by base_projection * percentile_scale.",
+
+        "points": {
+            "psa": {
+                "enabled": true,
+                "scale": 0.03,
+                "cap": 1.5,
+                "confidence": 0.15,
+                "_comment": "Points per Shot Attempt percentile. Higher = more efficient scorer."
+            },
+            "star_treatment": {
+                "enabled": true,
+                "usage_min_percentile": 80,
+                "psa_min_percentile": 60,
+                "scale": 0.02,
+                "cap": 1.0,
+                "confidence": 0.1,
+                "_comment": "Bonus for high-usage elite scorers."
+            }
+        },
+
+        "assists": {
+            "ast_pct": {
+                "enabled": true,
+                "scale": 0.04,
+                "cap": 1.0,
+                "confidence": 0.2,
+                "_comment": "AST% percentile for playmaking ability."
+            },
+            "ast_to_usage": {
+                "enabled": true,
+                "high_threshold": 70,
+                "high_scale": 0.15,
+                "high_cap": 0.75,
+                "low_threshold": 30,
+                "low_scale": -0.1,
+                "low_cap": -0.5,
+                "confidence": 0.1,
+                "_comment": "Assist-to-Usage ratio percentile. High = efficient playmaker."
+            }
+        },
+
+        "turnovers": {
+            "tov_pct": {
+                "enabled": false,
+                "low_threshold": 30,
+                "low_scale": 0.5,
+                "low_cap": 0.4,
+                "low_confidence": 0.2,
+                "high_threshold": 70,
+                "high_scale": -0.3,
+                "high_cap": -0.3,
+                "high_confidence": 0.15,
+                "_comment": "DISABLED: Turnovers prop rarely bet. Low percentile = high TOV%."
+            }
+        },
+
+        "combined": {
+            "pra_pa": {
+                "enabled": true,
+                "psa_min_percentile": 70,
+                "ast_min_percentile": 50,
+                "alt_psa_min_percentile": 50,
+                "alt_ast_min_percentile": 70,
+                "scale": 0.015,
+                "cap": 1.0,
+                "confidence": 0.1,
+                "_comment": "Combined prop boost for good scorer+playmaker combos."
+            }
+        },
+
+        "position": {
+            "point_assists": {
+                "enabled": true,
+                "min_ast_percentile": 60,
+                "scale": 0.02,
+                "cap": 0.5,
+                "confidence": 0.05,
+                "_comment": "Point guard assist bonus for elite facilitators."
+            },
+            "big_rebounds": {
+                "enabled": true,
+                "max_usage_percentile": 40,
+                "scale": 0.03,
+                "cap": 0.5,
+                "confidence": 0.1,
+                "_comment": "Low-usage big = likely rebounding specialist."
+            }
+        }
+    }
+}

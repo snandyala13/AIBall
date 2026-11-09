@@ -1,0 +1,617 @@
+{
+ "Resources": {
+  "AiBallEfs364E4857": {
+   "Type": "AWS::EFS::FileSystem",
+   "Properties": {
+    "Encrypted": true,
+    "FileSystemPolicy": {
+     "Statement": [
+      {
+       "Action": [
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+       ],
+       "Condition": {
+        "Bool": {
+         "elasticfilesystem:AccessedViaMountTarget": "true"
+        }
+       },
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": "*"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "FileSystemTags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalStorage/AiBallEfs"
+     }
+    ],
+    "LifecyclePolicies": [
+     {
+      "TransitionToIA": "AFTER_30_DAYS"
+     }
+    ],
+    "ThroughputMode": "bursting"
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/AiBallEfs/Resource"
+   }
+  },
+  "AiBallEfsEfsMountTarget1382EC9B7": {
+   "Type": "AWS::EFS::MountTarget",
+   "Properties": {
+    "FileSystemId": {
+     "Ref": "AiBallEfs364E4857"
+    },
+    "SecurityGroups": [
+     {
+      "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttEfsSgCAB16DA1GroupId4DE98B00"
+     }
+    ],
+    "SubnetId": {
+     "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPublicSubnet1Subnet220FA55C82B8B6C5"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/AiBallEfs/EfsMountTarget1"
+   }
+  },
+  "AiBallEfsEfsMountTarget2B7F914B3": {
+   "Type": "AWS::EFS::MountTarget",
+   "Properties": {
+    "FileSystemId": {
+     "Ref": "AiBallEfs364E4857"
+    },
+    "SecurityGroups": [
+     {
+      "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttEfsSgCAB16DA1GroupId4DE98B00"
+     }
+    ],
+    "SubnetId": {
+     "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPublicSubnet2Subnet4FE224D7545A29BC"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/AiBallEfs/EfsMountTarget2"
+   }
+  },
+  "AiBallEfsDataAccessPoint728F562E": {
+   "Type": "AWS::EFS::AccessPoint",
+   "Properties": {
+    "AccessPointTags": [
+     {
+      "Key": "Name",
+      "Value": "PropTerminalStorage/AiBallEfs/DataAccessPoint"
+     }
+    ],
+    "FileSystemId": {
+     "Ref": "AiBallEfs364E4857"
+    },
+    "PosixUser": {
+     "Gid": "1000",
+     "Uid": "1000"
+    },
+    "RootDirectory": {
+     "CreationInfo": {
+      "OwnerGid": "1000",
+      "OwnerUid": "1000",
+      "Permissions": "0755"
+     },
+     "Path": "/data"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/AiBallEfs/DataAccessPoint/Resource"
+   }
+  },
+  "AiBallArtifacts0B3B5F72": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketName": {
+     "Fn::Join": [
+      "",
+      [
+       "aiball-artifacts-",
+       {
+        "Ref": "AWS::AccountId"
+       }
+      ]
+     ]
+    },
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "ExpirationInDays": 365,
+       "Prefix": "prediction-logs/",
+       "Status": "Enabled",
+       "Transitions": [
+        {
+         "StorageClass": "STANDARD_IA",
+         "TransitionInDays": 90
+        }
+       ]
+      }
+     ]
+    },
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "VersioningConfiguration": {
+     "Status": "Enabled"
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/AiBallArtifacts/Resource"
+   }
+  },
+  "BallDontLieApiKeyDB6C50DD": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Name": "propterminal/balldontlie-api-key",
+    "SecretString": "PLACEHOLDER"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/BallDontLieApiKey/Resource"
+   }
+  },
+  "PropLineApiKeyCE8D3FA4": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Name": "propterminal/propline-api-key",
+    "SecretString": "PLACEHOLDER"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/PropLineApiKey/Resource"
+   }
+  },
+  "OddsApiKeyC60B4813": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Name": "propterminal/odds-api-key",
+    "SecretString": "PLACEHOLDER"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/OddsApiKey/Resource"
+   }
+  },
+  "CtgCredentials466CBCB5": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Name": "propterminal/ctg-credentials",
+    "SecretString": "{\"email\":\"\",\"password\":\"\"}"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/CtgCredentials/Resource"
+   }
+  },
+  "PropTerminalAuth57846FAF": {
+   "Type": "AWS::SecretsManager::Secret",
+   "Properties": {
+    "Name": "propterminal/auth",
+    "SecretString": "{\"password_hash\":\"PLACEHOLDER\",\"session_secret\":\"PLACEHOLDER\"}"
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/PropTerminalAuth/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/1WNwQrCMBBEv6X3dJWWCh5V8CYU611i3NbYNoHsFikh/27aXPQ082YGpoCiqmCbyQ/l6tnng36Ab1iqXsTo7rEl8Gc9YDMT4yhOrfmni50M36TrkMVBKSSqrTa8VD8YBJXgj5Pqca2Siykqh0yjNLJDF59XXhbJhRBEPfPLmk0Je9hlb9I6d/FSjwjXpF8UFa85xAAAAA=="
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalStorage/CDKMetadata/Default"
+   },
+   "Condition": "CDKMetadataAvailable"
+  }
+ },
+ "Conditions": {
+  "CDKMetadataAvailable": {
+   "Fn::Or": [
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "af-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-3"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-south-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-3"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-4"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ca-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ca-west-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "cn-north-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "cn-northwest-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-central-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-north-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-south-2"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-3"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "il-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "me-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "me-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "sa-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-east-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-west-1"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Equals": [
+      {
+       "Ref": "AWS::Region"
+      },
+      "us-west-2"
+     ]
+    }
+   ]
+  }
+ },
+ "Outputs": {
+  "ExportsOutputFnGetAttAiBallEfs364E4857ArnC2F1B28B": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AiBallEfs364E4857",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputFnGetAttAiBallEfs364E4857ArnC2F1B28B"
+   }
+  },
+  "ExportsOutputFnGetAttAiBallArtifacts0B3B5F72Arn7A025041": {
+   "Value": {
+    "Fn::GetAtt": [
+     "AiBallArtifacts0B3B5F72",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputFnGetAttAiBallArtifacts0B3B5F72Arn7A025041"
+   }
+  },
+  "ExportsOutputRefAiBallArtifacts0B3B5F72233887FF": {
+   "Value": {
+    "Ref": "AiBallArtifacts0B3B5F72"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefAiBallArtifacts0B3B5F72233887FF"
+   }
+  },
+  "ExportsOutputRefBallDontLieApiKeyDB6C50DD84E1CFB5": {
+   "Value": {
+    "Ref": "BallDontLieApiKeyDB6C50DD"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefBallDontLieApiKeyDB6C50DD84E1CFB5"
+   }
+  },
+  "ExportsOutputRefPropLineApiKeyCE8D3FA488B7A52A": {
+   "Value": {
+    "Ref": "PropLineApiKeyCE8D3FA4"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefPropLineApiKeyCE8D3FA488B7A52A"
+   }
+  },
+  "ExportsOutputRefOddsApiKeyC60B481337C37BA0": {
+   "Value": {
+    "Ref": "OddsApiKeyC60B4813"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefOddsApiKeyC60B481337C37BA0"
+   }
+  },
+  "ExportsOutputRefCtgCredentials466CBCB559499983": {
+   "Value": {
+    "Ref": "CtgCredentials466CBCB5"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+   }
+  },
+  "ExportsOutputRefPropTerminalAuth57846FAFCA6857E2": {
+   "Value": {
+    "Ref": "PropTerminalAuth57846FAF"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+   }
+  },
+  "ExportsOutputRefAiBallEfs364E485792789D7A": {
+   "Value": {
+    "Ref": "AiBallEfs364E4857"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefAiBallEfs364E485792789D7A"
+   }
+  },
+  "ExportsOutputRefAiBallEfsDataAccessPoint728F562E60F97B16": {
+   "Value": {
+    "Ref": "AiBallEfsDataAccessPoint728F562E"
+   },
+   "Export": {
+    "Name": "PropTerminalStorage:ExportsOutputRefAiBallEfsDataAccessPoint728F562E60F97B16"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

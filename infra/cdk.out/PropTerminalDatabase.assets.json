@@ -1,0 +1,20 @@
+{
+  "version": "53.0.0",
+  "files": {
+    "6943e34d0f572aebbec65b1e71277565a87984cdb5df8929cf04507eab7a277c": {
+      "displayName": "PropTerminalDatabase Template",
+      "source": {
+        "path": "PropTerminalDatabase.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "current_account-current_region-dfc43d02": {
+          "bucketName": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}",
+          "objectKey": "6943e34d0f572aebbec65b1e71277565a87984cdb5df8929cf04507eab7a277c.json",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-${AWS::Region}"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

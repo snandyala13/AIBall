@@ -286,14 +286,59 @@ def run_game_analysis(game_desc: str, player_names: List[str] = None):
     from model_engine import ModelEngine, PropType
     from bet_generator import BetGenerator
 
-    # Parse game description (e.g., "Boston Celtics vs Milwaukee Bucks")
+    # Team name mapping for short names -> full names
+    TEAM_ALIASES = {
+        "jazz": "Utah Jazz", "utah": "Utah Jazz",
+        "hornets": "Charlotte Hornets", "charlotte": "Charlotte Hornets",
+        "celtics": "Boston Celtics", "boston": "Boston Celtics",
+        "bucks": "Milwaukee Bucks", "milwaukee": "Milwaukee Bucks",
+        "lakers": "Los Angeles Lakers", "la lakers": "Los Angeles Lakers",
+        "clippers": "LA Clippers", "la clippers": "LA Clippers", "los angeles clippers": "LA Clippers",
+        "warriors": "Golden State Warriors", "golden state": "Golden State Warriors",
+        "suns": "Phoenix Suns", "phoenix": "Phoenix Suns",
+        "kings": "Sacramento Kings", "sacramento": "Sacramento Kings",
+        "nuggets": "Denver Nuggets", "denver": "Denver Nuggets",
+        "thunder": "Oklahoma City Thunder", "okc": "Oklahoma City Thunder",
+        "blazers": "Portland Trail Blazers", "portland": "Portland Trail Blazers",
+        "timberwolves": "Minnesota Timberwolves", "wolves": "Minnesota Timberwolves", "minnesota": "Minnesota Timberwolves",
+        "mavericks": "Dallas Mavericks", "mavs": "Dallas Mavericks", "dallas": "Dallas Mavericks",
+        "spurs": "San Antonio Spurs", "san antonio": "San Antonio Spurs",
+        "rockets": "Houston Rockets", "houston": "Houston Rockets",
+        "grizzlies": "Memphis Grizzlies", "memphis": "Memphis Grizzlies",
+        "pelicans": "New Orleans Pelicans", "new orleans": "New Orleans Pelicans",
+        "heat": "Miami Heat", "miami": "Miami Heat",
+        "magic": "Orlando Magic", "orlando": "Orlando Magic",
+        "hawks": "Atlanta Hawks", "atlanta": "Atlanta Hawks",
+        "bulls": "Chicago Bulls", "chicago": "Chicago Bulls",
+        "cavaliers": "Cleveland Cavaliers", "cavs": "Cleveland Cavaliers", "cleveland": "Cleveland Cavaliers",
+        "pistons": "Detroit Pistons", "detroit": "Detroit Pistons",
+        "pacers": "Indiana Pacers", "indiana": "Indiana Pacers",
+        "knicks": "New York Knicks", "new york": "New York Knicks",
+        "nets": "Brooklyn Nets", "brooklyn": "Brooklyn Nets",
+        "76ers": "Philadelphia 76ers", "sixers": "Philadelphia 76ers", "philadelphia": "Philadelphia 76ers",
+        "raptors": "Toronto Raptors", "toronto": "Toronto Raptors",
+        "wizards": "Washington Wizards", "washington": "Washington Wizards",
+    }
+
+    def normalize_team(name: str) -> str:
+        """Convert short team name to full name"""
+        name_lower = name.lower().strip()
+        if name_lower in TEAM_ALIASES:
+            return TEAM_ALIASES[name_lower]
+        # Check if it's already a full name
+        for full_name in TEAM_ALIASES.values():
+            if name_lower in full_name.lower():
+                return full_name
+        return name  # Return as-is if not found
+
+    # Parse game description (e.g., "Boston Celtics vs Milwaukee Bucks" or "Celtics vs Bucks")
     parts = game_desc.replace(" @ ", " vs ").split(" vs ")
     if len(parts) != 2:
         print("Error: Game should be in format 'Team A vs Team B'")
         return
 
-    away_team = parts[0].strip()
-    home_team = parts[1].strip()
+    away_team = normalize_team(parts[0].strip())
+    home_team = normalize_team(parts[1].strip())
 
     print(f"\n{'='*70}")
     print(f"  GAME ANALYSIS: {away_team} @ {home_team}")
@@ -381,15 +426,29 @@ def run_game_analysis(game_desc: str, player_names: List[str] = None):
     recs = generator.generate_recommendations(analysis)
 
     # Output
-    print(generator.format_recommendations(recs))
+    formatted_output = generator.format_recommendations(recs)
+    print(formatted_output)
 
-    # Save to file
+    # Save to files (both JSON and TXT)
     os.makedirs("outputs", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"outputs/game_{timestamp}.json"
-    with open(filename, "w") as f:
+
+    # Create safe filename from team names
+    away_short = away_team.split()[-1].lower()  # e.g., "Hornets"
+    home_short = home_team.split()[-1].lower()  # e.g., "Jazz"
+
+    # Save JSON
+    json_filename = f"outputs/{away_short}_{home_short}_{timestamp}.json"
+    with open(json_filename, "w") as f:
         f.write(generator.export_to_json(recs))
-    print(f"\nSaved to: {filename}")
+
+    # Save TXT with formatted output
+    txt_filename = f"outputs/{away_short}_{home_short}_{timestamp}.txt"
+    with open(txt_filename, "w") as f:
+        f.write(formatted_output)
+
+    print(f"\nSaved to: {txt_filename}")
+    print(f"          {json_filename}")
 
 
 def run_today_analysis():
@@ -440,6 +499,8 @@ def run_today_analysis():
     print("  Analyzing each game...")
     print("-" * 70)
 
+    os.makedirs("outputs", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     all_recommendations = []
 
     for game in games:
@@ -496,11 +557,21 @@ def run_today_analysis():
 
         analysis = engine.analyze_game(context, player_names)
         recs = generator.generate_recommendations(analysis)
-        print(generator.format_recommendations(recs))
+        formatted_output = generator.format_recommendations(recs)
+        print(formatted_output)
+
+        # Save individual game txt file
+        away_short = away.split()[-1].lower()
+        home_short = home.split()[-1].lower()
+        game_txt = f"outputs/{away_short}_{home_short}_{timestamp}.txt"
+        with open(game_txt, "w") as f:
+            f.write(formatted_output)
+        print(f"\n  Saved to: {game_txt}")
 
         all_recommendations.append({
             "game": f"{away} @ {home}",
-            "recs": recs
+            "recs": recs,
+            "formatted": formatted_output
         })
 
     # Summary
@@ -517,25 +588,40 @@ def run_today_analysis():
     print(f"\n  Total picks across all games: {total_picks}")
     print(f"  Total units recommended: {total_units:.1f}")
 
-    # Save all recommendations to files
+    # Save master file with all recommendations
     os.makedirs("outputs", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Save human-readable text file
-    txt_filename = f"outputs/today_{timestamp}.txt"
-    with open(txt_filename, "w") as f:
-        f.write(f"NBA BETTING PICKS - {date_str}\n")
-        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    # Save master human-readable text file
+    master_txt = f"outputs/master_picks_{timestamp}.txt"
+    with open(master_txt, "w") as f:
+        f.write("=" * 70 + "\n")
+        f.write(f"  NBA BETTING PICKS - {date_str}\n")
+        f.write(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+        f.write(f"  Using V8 ML Filter (+958.3u backtest profit)\n")
         f.write("=" * 70 + "\n\n")
-        f.write(f"Total Picks: {total_picks}\n")
-        f.write(f"Total Units: {total_units:.1f}\n\n")
-
+        f.write(f"SUMMARY\n")
+        f.write(f"  Games Analyzed: {len(all_recommendations)}\n")
+        f.write(f"  Total Picks: {total_picks}\n")
+        f.write(f"  Total Units: {total_units:.1f}\n\n")
+        f.write("=" * 70 + "\n")
+        f.write("  INDIVIDUAL GAME FILES\n")
+        f.write("=" * 70 + "\n")
         for rec in all_recommendations:
-            f.write(generator.format_recommendations(rec["recs"]))
+            game_name = rec["game"].replace(" @ ", "_").replace(" ", "_").lower()
+            f.write(f"  - {rec['game']}\n")
+        f.write("\n")
+
+        # Write all game picks
+        for rec in all_recommendations:
+            f.write("\n" + "=" * 70 + "\n")
+            f.write(f"  {rec['game']}\n")
+            f.write("=" * 70 + "\n\n")
+            f.write(rec["formatted"])
             f.write("\n")
 
-    print(f"\n  Saved to: {txt_filename}")
+    print(f"\n  Master file: {master_txt}")
+    print(f"  Individual game files saved to outputs/")
 
 
 def main():
@@ -548,6 +634,11 @@ Examples:
   python ball.py --player "Jaylen Brown"      # Analyze player
   python ball.py --game "Celtics vs Bucks"    # Analyze game
   python ball.py --today                      # All today's games
+  python ball.py --web                        # Start web UI
+  python ball.py --check-drift                # Check model performance
+  python ball.py --retrain                    # Retrain ML models
+  python ball.py --retrain --force            # Force retrain
+  python ball.py --train-v2                   # Retrain v2 LightGBM models
         """
     )
     parser.add_argument(
@@ -575,10 +666,108 @@ Examples:
         action="store_true",
         help="Run demonstration mode"
     )
+    parser.add_argument(
+        "--web", "-w",
+        action="store_true",
+        help="Start the web UI server on port 8000"
+    )
+    parser.add_argument(
+        "--check-drift",
+        action="store_true",
+        help="Check model drift and performance"
+    )
+    parser.add_argument(
+        "--retrain",
+        action="store_true",
+        help="Retrain ML models with latest data"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force retrain even if drift not detected (use with --retrain)"
+    )
+    parser.add_argument(
+        "--train-v2",
+        action="store_true",
+        help="Retrain v2 line-anchor LightGBM models"
+    )
 
     args = parser.parse_args()
 
-    if args.player:
+    if args.train_v2:
+        print("\n" + "=" * 70)
+        print("  RETRAINING v2 LINE-ANCHOR MODELS")
+        print("=" * 70 + "\n")
+
+        # Step 1: Optionally fetch latest tracking/PBP data
+        print("Step 1: Checking tracking/PBP data...")
+        try:
+            from v2.enrich_training_data import load_tracking_data, load_pbp_data
+            tracking = load_tracking_data()
+            pbp = load_pbp_data()
+            total_tracking = sum(len(v) for v in tracking.values())
+            total_pbp = sum(len(v) for v in pbp.values())
+            print(f"  Tracking data: {total_tracking} players across {len(tracking)} seasons")
+            print(f"  PBP data: {total_pbp} players across {len(pbp)} seasons")
+            if total_tracking == 0:
+                print("  WARNING: No tracking data found. Run 'python -m v2.fetch_tracking' first.")
+        except Exception as e:
+            print(f"  Could not check tracking data: {e}")
+
+        # Step 2: Build features
+        print("\nStep 2: Building features...")
+        from v2.features import FeatureBuilder
+        fb = FeatureBuilder()
+        fb.load_games()
+        fb.build_player_history()
+        X, y, meta = fb.build_training_data(target_mode="line_anchor")
+        print(f"  Built {len(X)} samples with {len(X.columns)} features")
+
+        # Step 3: Enrich with tracking data
+        print("\nStep 3: Enriching with tracking/PBP features...")
+        try:
+            from v2.enrich_training_data import enrich_feature_matrix, load_tracking_data, load_pbp_data
+            tracking = load_tracking_data()
+            pbp = load_pbp_data()
+            X = enrich_feature_matrix(X, meta, tracking, pbp)
+            print(f"  Enriched to {len(X.columns)} features")
+        except Exception as e:
+            print(f"  Enrichment skipped: {e}")
+
+        # Step 4: Train models and save
+        print("\nStep 4: Training and saving LightGBM models...")
+        from v2.train import ModelTrainer
+        trainer = ModelTrainer(X, y, meta, target_mode="line_anchor")
+        all_metrics = trainer.train_all()  # trains, saves models + metadata
+
+        print("\n" + "=" * 70)
+        print("  v2 RETRAINING COMPLETE")
+        print("  The web engine will auto-load on next request.")
+        print("=" * 70 + "\n")
+
+    elif args.check_drift:
+        from drift_monitor import DriftMonitor
+        monitor = DriftMonitor()
+        print(monitor.generate_report(days_back=30))
+    elif args.retrain:
+        from retrain import ModelRetrainer
+        retrainer = ModelRetrainer()
+        summary = retrainer.run(force=args.force)
+        action = summary.get("action", "unknown")
+        if action == "deployed":
+            print(f"\nNew models deployed for: {', '.join(summary.get('deployed_props', []))}")
+        elif action == "kept_old":
+            print("\nExisting models kept (new models did not improve enough).")
+        elif action == "skipped":
+            print("\nNo retraining needed. Use --force to override.")
+        else:
+            print(f"\nRetraining result: {action}")
+    elif args.web:
+        import uvicorn
+        print("\n  Starting aiBall Web UI...")
+        print("  Open http://localhost:8000 in your browser\n")
+        uvicorn.run("web.app:app", host="0.0.0.0", port=8000, reload=True)
+    elif args.player:
         run_player_analysis(args.player)
     elif args.game:
         players = args.players.split(",") if args.players else None

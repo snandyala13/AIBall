@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>{% block title %}PropTerminal{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css?v={{ cache_bust }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127936;</text></svg>">
+    <!-- PWA: iOS -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PropTerminal">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <!-- PWA: Android/Chrome -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#0d1117">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-content">
+            <a href="/" class="nav-brand">
+                <span class="brand-icon">&#127936;</span>
+                <span class="brand-text">PropTerminal</span>
+            </a>
+            <div class="nav-center" id="nav-center">
+                <div class="nav-stat" id="nav-picks-stat" style="display:none;">
+                    <span>Picks</span>
+                    <span class="nav-stat-value" id="nav-picks-count">0</span>
+                </div>
+                <div class="nav-stat" id="nav-units-stat" style="display:none;">
+                    <span>Units</span>
+                    <span class="nav-stat-value" id="nav-units-count">0.0u</span>
+                </div>
+            </div>
+            <div class="nav-info">
+                <span class="nav-date">{{ date }}</span>
+                <span class="nav-divider">|</span>
+                <span class="nav-ml-status" title="Active ML filter version">{{ ml_status }}</span>
+                <button class="btn btn-sm btn-outline" onclick="refreshData()" title="Clear caches and refresh">Refresh</button>
+                <a href="/logout" class="btn btn-sm btn-outline btn-logout" title="Sign out">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-left">
+                <span>PropTerminal &mdash; Real-time NBA prop intelligence</span>
+                <span class="footer-divider">|</span>
+                <span>Quarter Kelly (0.25x) Sizing</span>
+            </div>
+            <div class="footer-right">
+                <span class="footer-status">
+                    <span class="footer-status-dot {{ 'active' if ml_status != 'Rule-based' else 'inactive' }}"></span>
+                    {{ ml_status }}
+                </span>
+                <span class="footer-divider">|</span>
+                <span id="footer-propline-status" class="footer-status">
+                    <span class="footer-status-dot inactive"></span>
+                    PropLine
+                </span>
+                <span class="footer-divider">|</span>
+                <span id="footer-timestamp">--</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Copy tooltip -->
+    <div class="copy-tooltip" id="copy-tooltip">Copied to clipboard</div>
+
+    <script src="/static/app.js?v={{ cache_bust }}"></script>
+    <script>
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/static/sw.js').catch(function() {});
+    }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

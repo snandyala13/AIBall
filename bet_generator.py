@@ -13,20 +13,42 @@ Uses Fractional Kelly Criterion (0.25) for position sizing.
 import math
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 from datetime import datetime
 from enum import Enum
+
+# Set up logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from model_engine import (
     ModelEngine, Projection, CorrelatedPair, PropType,
     EdgeCalculator, CorrelationEngine
 )
 from data_pipeline import DataPipeline, GameContext, PlayerProp
-from ml_filter import get_ml_filter, MLFilter
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Prediction uncertainty model for Kelly sizing adjustments
+try:
+    from confidence_intervals import PredictionUncertainty
+    _UNCERTAINTY_AVAILABLE = True
+except ImportError:
+    _UNCERTAINTY_AVAILABLE = False
+
+# Line edge detection (sharp money, cross-book discrepancies)
+try:
+    from line_edge import LineEdgeDetector
+    _LINE_EDGE_AVAILABLE = True
+except ImportError:
+    _LINE_EDGE_AVAILABLE = False
+
+# ML filter — use main ml_filter.py which auto-loads V10 (best) with fallback chain
+try:
+    from ml_filter import get_ml_filter, MLFilter
+    USE_ML_FILTER = True
+except ImportError:
+    USE_ML_FILTER = False
+    logger.warning("No ML filter available — will use rule-based projections only")
 
 
 # =============================================================================
@@ -72,8 +94,19 @@ class Bet:
     player_tier: PlayerTier = PlayerTier.ROTATION
     minutes_avg: float = 0.0
 
+    # Cross-book data
+    best_over_book: str = "draftkings"
+    best_under_book: str = "draftkings"
+    all_books: Dict = field(default_factory=dict)
+
     # Detailed reasoning components
     reasoning_factors: List[str] = None
+
+    # ML-adjusted probability
+    ml_prob: float = 0.0
+
+    # Line edge signal from sharp money / cross-book analysis
+    line_signal: str = "neutral"
 
     def __post_init__(self):
         if self.reasoning_factors is None:
@@ -109,7 +142,10 @@ class GameRecommendations:
     # Singles (reduced - only best plays)
     best_singles: List[Bet]
 
-    # HIGH-CONFIDENCE PARLAYS (new - targeting 65%+ leg hit rate)
+    # Pop-off specials (injury usage boost plays)
+    popoff_singles: List[Bet]
+
+    # HIGH-CONFIDENCE PARLAYS (targeting 65%+ leg hit rate)
     high_confidence_parlays: List[ParlayBet]  # 2-leg parlays with 65%+ legs
 
     # Parlays by risk level
@@ -127,7 +163,7 @@ class GameRecommendations:
 
     @property
     def tier_2_popoffs(self) -> List[Bet]:
-        return []
+        return self.popoff_singles
 
     @property
     def tier_3_parlays(self) -> List[ParlayBet]:
@@ -155,6 +191,8 @@ class KellyCriterion:
     @classmethod
     def american_to_decimal(cls, odds: int) -> float:
         """Convert American odds to decimal"""
+        if odds == 0:
+            return 1.0
         if odds > 0:
             return 1 + (odds / 100)
         else:
@@ -175,10 +213,12 @@ class KellyCriterion:
         # Full Kelly
         full_kelly = (b * p - q) / b
 
-        # Fractional Kelly
-        fractional = full_kelly * cls.KELLY_FRACTION
+        if full_kelly <= 0:
+            # Negative EV — do not bet
+            return 0.0
 
-        return max(0, fractional)
+        # Fractional Kelly
+        return full_kelly * cls.KELLY_FRACTION
 
     @classmethod
     def calculate_units(
@@ -239,26 +279,45 @@ class SGPJuiceCalculator:
         correlations: List[float]
     ) -> float:
         """
-        Calculate true parlay probability with correlation adjustment.
-
-        P(A ∩ B) = P(A) × P(B) + ρ × σ_A × σ_B
+        Calculate true parlay probability using Gaussian copula for pairwise
+        correlations. For 2 legs: uses bivariate normal CDF. For 3+ legs:
+        chains pairwise adjustments.
         """
+        from scipy.stats import norm, multivariate_normal
+
         if len(leg_probabilities) < 2:
             return leg_probabilities[0] if leg_probabilities else 0
 
-        cumulative = leg_probabilities[0]
+        # Clamp probabilities to avoid infinities in ppf
+        clamped = [max(0.001, min(0.999, p)) for p in leg_probabilities]
 
-        for i in range(1, len(leg_probabilities)):
-            p_current = leg_probabilities[i]
-            corr = correlations[i-1] if i-1 < len(correlations) else 0
+        if len(clamped) == 2:
+            # Exact bivariate normal CDF
+            rho = correlations[0] if correlations else 0
+            rho = max(-0.95, min(0.95, rho))  # Numerical stability
+            z_a = norm.ppf(clamped[0])
+            z_b = norm.ppf(clamped[1])
+            cov = [[1, rho], [rho, 1]]
+            joint = multivariate_normal.cdf([z_a, z_b], mean=[0, 0], cov=cov)
+            return max(0.001, min(0.999, joint))
 
-            sigma_prev = math.sqrt(cumulative * (1 - cumulative))
-            sigma_current = math.sqrt(p_current * (1 - p_current))
+        # For 3+ legs: chain pairwise (approximate)
+        # Start with first two legs using copula, then multiply remaining
+        # with average correlation boost
+        result = cls.calculate_true_parlay_probability(clamped[:2], correlations[:1])
+        avg_corr = sum(correlations) / len(correlations) if correlations else 0
 
-            cumulative = cumulative * p_current + corr * sigma_prev * sigma_current
-            cumulative = max(0.001, min(0.999, cumulative))
+        for i in range(2, len(clamped)):
+            # Adjust each additional leg with average correlation
+            corr = correlations[i-1] if i-1 < len(correlations) else avg_corr
+            pair_joint = cls.calculate_true_parlay_probability(
+                [result, clamped[i]], [corr]
+            )
+            # Blend: weighted toward naive for stability on long parlays
+            naive = result * clamped[i]
+            result = pair_joint * 0.7 + naive * 0.3
 
-        return cumulative
+        return max(0.001, min(0.999, result))
 
     @classmethod
     def calculate_naive_probability(cls, leg_probabilities: List[float]) -> float:
@@ -297,40 +356,51 @@ class BetGenerator:
     PARLAY_MIN_EDGE = 2.5       # 2.5% for parlays
     PARLAY_MIN_CORRELATION = 0.20
 
-    # Props to EXCLUDE from recommendations (poor backtest performance)
-    # Assists: 42.8% hit rate in backtest - terrible!
-    EXCLUDED_PROPS = {"assists"}
+    # Props to EXCLUDE from recommendations
+    # V5 UPDATE: No props excluded - all perform well with tuned models
+    EXCLUDED_PROPS = set()  # Empty - V5 shows all props profitable
 
     # Props to DEPRIORITIZE (not excluded, but penalized in scoring)
-    # Threes: 53.1% vs PRA 61.6% (p=0.000002) - statistically worse
-    DEPRIORITIZED_PROPS = {"threes"}
-    DEPRIORITIZED_PENALTY = 0.75  # 25% score reduction
+    # V5 UPDATE: No props deprioritized - threes actually best performer!
+    DEPRIORITIZED_PROPS = set()  # Empty
+    DEPRIORITIZED_PENALTY = 1.0  # No penalty
 
-    # UNDER preference - backtest showed UNDERs hit 60.2% vs OVERs 56.2% (p=0.0002)
-    UNDER_PREFERENCE_MULT = 1.15  # 15% boost to UNDER picks in scoring
+    # UNDER preference - backtest showed UNDERs slightly outperform
+    UNDER_PREFERENCE_MULT = 1.10  # 10% boost to UNDER picks in scoring
 
     # ==========================================================================
-    # HIGH-CONFIDENCE FILTER (targeting 60%+ hit rate on individual legs)
-    # Based on backtest of 17,436 predictions across 911 games
-    # Relaxed to get 3-5 high-quality legs per game for diverse parlays
+    # HIGH-CONFIDENCE FILTER - V5 TUNED THRESHOLDS
+    # Based on 132K+ predictions with 70 features (Tracking + PBP + CTG)
+    # V5 Results: +870.5u profit, ~9.5% ROI
     # ==========================================================================
-    # Probability thresholds (from backtest: Prob 60%+ hits at 56.7%, 65%+ at 57.3%)
-    HIGH_CONF_MIN_PROB = 0.60       # Minimum model probability for high-conf legs
-    HIGH_CONF_ELITE_PROB = 0.65     # Elite probability threshold (57%+ hit rate)
-    HIGH_CONF_MIN_CONFIDENCE = 0.80  # Minimum confidence score (consistency)
-    HIGH_CONF_MIN_EDGE = 4.0        # Minimum edge required (filters out low-value picks)
+    # V5 prop-specific thresholds (see ml_filter_v5.py for details):
+    # - Points: 60% -> 54.1% hit rate, 3.4% ROI
+    # - Rebounds: 58% -> 56.9% hit rate, 8.7% ROI
+    # - Assists: 55% -> 57.3% hit rate, 9.5% ROI
+    # - Threes: 52% -> 59.7% hit rate, 14.0% ROI (BEST!)
+    # - Steals: 58% -> 59.9% hit rate, 14.5% ROI
+    # - Blocks: 52% -> 59.2% hit rate, 13.0% ROI
+    HIGH_CONF_MIN_PROB = 0.55       # Minimum model probability (legacy fallback)
+    HIGH_CONF_ELITE_PROB = 0.60     # Elite probability threshold (legacy fallback)
+    HIGH_CONF_MIN_CONFIDENCE = 0.75  # Minimum confidence score
+    HIGH_CONF_MIN_EDGE = 3.0        # Minimum edge required
 
-    # Line value thresholds - stars hit better than role players (56.4% vs 53.5%)
+    # Line value thresholds - stars hit better than role players
     STAR_LINE_THRESHOLDS = {
         "points": 18,           # Star players score 18+ points
         "rebounds": 7,          # Elite rebounders get 7+ boards
         "assists": 5,           # Primary ball handlers get 5+ assists
+        "threes": 2.5,          # Volume shooters get 2.5+ threes
         "pts_rebs_asts": 28,    # Star PRA is 28+
     }
 
-    # Props that perform best in backtest
-    HIGH_CONF_PREFERRED_PROPS = {"points", "pts_rebs_asts", "rebounds"}  # 55%+ hit rates
-    HIGH_CONF_AVOID_PROPS = {"threes"}  # 49.8% - below breakeven
+    # V5: ALL props perform well with tuned models
+    HIGH_CONF_PREFERRED_PROPS = {"threes", "steals", "blocks", "rebounds", "assists", "points"}
+    HIGH_CONF_AVOID_PROPS = set()  # Empty - no props avoided
+
+    # Scoring props that shouldn't be stacked from the same team in parlays
+    # Includes combined props that overlap with points
+    SCORING_PROPS = {"points", "pts_rebs_asts", "pts_rebs", "pts_asts"}
 
     # Bet limits
     MAX_SINGLES = 2             # Only top 2 singles
@@ -366,14 +436,98 @@ class BetGenerator:
         "triple_double": "Triple-Double",
     }
 
-    def __init__(self, model_engine: ModelEngine):
+    def __init__(self, model_engine: ModelEngine, propline_client=None):
         self.engine = model_engine
         self.kelly = KellyCriterion()
         self.sgp = SGPJuiceCalculator()
         self.edge_calc = EdgeCalculator()
-        self.ml_filter = get_ml_filter()  # ML ensemble filter for probability adjustment
-        if self.ml_filter.loaded:
-            logger.info("ML Filter loaded - using ensemble probability adjustment")
+
+        # Prediction uncertainty model — adjusts Kelly sizing by confidence
+        if _UNCERTAINTY_AVAILABLE:
+            self.uncertainty_model = PredictionUncertainty()
+            logger.info("Prediction uncertainty model loaded")
+        else:
+            self.uncertainty_model = None
+
+        # Line edge detector — sharp money, cross-book edges
+        self.line_edge = None
+        if _LINE_EDGE_AVAILABLE:
+            try:
+                self.line_edge = LineEdgeDetector(propline_client=propline_client)
+                logger.info("Line edge detector loaded")
+            except Exception as e:
+                logger.debug(f"Line edge detector init failed: {e}")
+
+        # ML filter — single module, auto-loads best available version (V10 → legacy)
+        self.ml_filter = None
+        self.ml_filter_version = "none"
+        if USE_ML_FILTER:
+            try:
+                self.ml_filter = get_ml_filter()
+                if self.ml_filter.loaded:
+                    self.ml_filter_version = "v10" if self.ml_filter.prop_models else "legacy"
+                    logger.info(f"{self.ml_filter_version} ML Filter loaded")
+            except Exception as e:
+                logger.warning(f"ML Filter init failed: {e}")
+
+    def _uncertainty_adjusted_units(
+        self,
+        proj: 'Projection',
+        prob: float,
+        dk_odds: int,
+        is_parlay: bool = False,
+        extra_reduction: float = 1.0,
+    ) -> float:
+        """
+        Compute Kelly units with prediction uncertainty adjustment.
+
+        When the uncertainty model is available, estimates how confident
+        the probability prediction is and scales the Kelly fraction down
+        for uncertain predictions.
+
+        Args:
+            proj: The Projection object
+            prob: Win probability for this side
+            dk_odds: American odds
+            is_parlay: Whether this is a parlay bet
+            extra_reduction: Additional multiplier (e.g. 0.7 for pop-offs)
+
+        Returns:
+            Recommended units (1 unit = 1% of bankroll)
+        """
+        base_units = self.kelly.calculate_units(prob, dk_odds, is_parlay=is_parlay)
+
+        if self.uncertainty_model is not None:
+            # Build adjustments dict from the projection breakdown
+            adjustments_dict = {
+                "base": proj.base_projection,
+                "defense": proj.defense_adjustment,
+                "pace": proj.pace_adjustment,
+                "home_away": proj.home_away_adjustment,
+                "tracking": proj.tracking_adjustment,
+                "pbp": proj.pbp_adjustment,
+                "ctg": proj.ctg_adjustment,
+                "lineup": proj.lineup_adjustment,
+                "minutes": proj.minutes_adjustment,
+            }
+
+            uncertainty = self.uncertainty_model.estimate_uncertainty(
+                projection=proj.projected_value,
+                line=proj.dk_line,
+                std_dev=proj.std_dev,
+                num_games=proj.games_sample,
+                adjustments_dict=adjustments_dict,
+                prop_type=proj.prop_type.value,
+                over_odds=proj.dk_over_odds,
+            )
+
+            kelly_adj = uncertainty["kelly_adjustment"]
+            base_units = round(base_units * kelly_adj, 2)
+
+        base_units *= extra_reduction
+
+        max_units = (self.kelly.MAX_PARLAY_BET if is_parlay else self.kelly.MAX_SINGLE_BET) * 100
+        return round(min(base_units, max_units), 2)
 
     def _get_prop_name(self, prop_type: PropType) -> str:
         """Get display name for prop type"""
@@ -412,77 +566,90 @@ class BetGenerator:
 
     def _generate_reasoning(self, proj: Projection, side: str) -> tuple:
         """
-        Generate detailed reasoning for a pick.
+        Generate detailed reasoning for a pick using complete sentences.
 
         Returns: (summary_string, list_of_factors)
         """
         factors = []
+        prop_name = self._get_prop_name(proj.prop_type).lower()
 
         # Player tier context
         tier = self._classify_player_tier(proj)
         if tier == PlayerTier.STAR:
-            factors.append(f"Star player ({proj.projected_minutes:.0f} min)")
+            factors.append(f"{proj.player_name} is a star player averaging {proj.projected_minutes:.0f} minutes per game.")
         elif tier == PlayerTier.ROTATION:
-            factors.append(f"Rotation player ({proj.projected_minutes:.0f} min)")
+            factors.append(f"{proj.player_name} is a rotation player getting around {proj.projected_minutes:.0f} minutes per game.")
         else:
-            factors.append(f"Bench player ({proj.projected_minutes:.0f} min)")
+            factors.append(f"{proj.player_name} is a bench player with limited minutes ({proj.projected_minutes:.0f} min).")
 
         # Role change detection
         if proj.role_change == "expanded":
-            factors.append("📈 Expanded role (min trending up)")
+            factors.append("His role has expanded recently with minutes trending upward.")
         elif proj.role_change == "reduced":
-            factors.append("📉 Reduced role (min trending down)")
+            factors.append("His role has decreased recently with fewer minutes in recent games.")
 
         # Projection vs line
         diff = proj.projected_value - proj.dk_line
         if side == "over":
             if diff > 2:
-                factors.append(f"Projects {diff:.1f} above line")
+                factors.append(f"Our model projects {proj.projected_value:.1f} {prop_name}, which is {diff:.1f} above the DraftKings line of {proj.dk_line}.")
             elif diff > 0:
-                factors.append(f"Slight edge over line (+{diff:.1f})")
+                factors.append(f"We project {proj.projected_value:.1f} {prop_name}, slightly above the {proj.dk_line} line.")
         else:
             if diff < -2:
-                factors.append(f"Projects {abs(diff):.1f} below line")
+                factors.append(f"Our model projects only {proj.projected_value:.1f} {prop_name}, which is {abs(diff):.1f} below the line of {proj.dk_line}.")
             elif diff < 0:
-                factors.append(f"Slight edge under line ({diff:.1f})")
+                factors.append(f"We project {proj.projected_value:.1f} {prop_name}, slightly under the {proj.dk_line} line.")
 
         # Adjustments that moved the projection
         if abs(proj.pace_adjustment) > 0.5:
-            direction = "Pace-up" if proj.pace_adjustment > 0 else "Pace-down"
-            factors.append(f"{direction} game ({proj.pace_adjustment:+.1f})")
+            if proj.pace_adjustment > 0:
+                factors.append(f"This game should be played at a faster pace, boosting his projection by {proj.pace_adjustment:.1f}.")
+            else:
+                factors.append(f"This matchup projects to be slower paced, reducing his projection by {abs(proj.pace_adjustment):.1f}.")
 
         if abs(proj.defense_adjustment) > 0.5:
-            matchup = "Weak defense" if proj.defense_adjustment > 0 else "Tough defense"
-            factors.append(f"{matchup} ({proj.defense_adjustment:+.1f})")
+            if proj.defense_adjustment > 0:
+                factors.append(f"He faces a weak defense that allows more {prop_name}, adding {proj.defense_adjustment:.1f} to his projection.")
+            else:
+                factors.append(f"He faces a tough defense that limits {prop_name}, reducing his projection by {abs(proj.defense_adjustment):.1f}.")
 
         if abs(proj.fatigue_adjustment) > 0.3:
             if proj.fatigue_adjustment < 0:
-                factors.append(f"B2B fatigue ({proj.fatigue_adjustment:.1f} min)")
+                factors.append(f"This is a back-to-back game, which typically reduces minutes and production.")
             else:
-                factors.append(f"Extra rest (+{proj.fatigue_adjustment:.1f} min)")
+                factors.append(f"He's well-rested coming into this game.")
 
         if abs(proj.blowout_adjustment) > 0.5:
-            factors.append(f"Blowout risk ({proj.blowout_adjustment:.1f} min)")
+            factors.append(f"The spread suggests blowout risk, which could limit his minutes in garbage time.")
 
-        if proj.usage_boost > 0:
-            factors.append(f"Injury opportunity (+{proj.usage_boost:.1f})")
+        if proj.usage_boost > 1.01:  # Multiplier: 1.0 = no boost, >1.01 = meaningful boost
+            boost_pct = (proj.usage_boost - 1.0) * 100
+            # Show which injured players are driving the boost
+            boost_sources = getattr(self.engine.popoff_hunter, 'boost_sources', {})
+            sources = boost_sources.get(proj.player_name, [])
+            if sources:
+                names = ", ".join(f"{s['injured']} ({s['mpg']}mpg, +{s['boost_pct']:.0f}%)" for s in sources)
+                factors.append(f"Usage boost +{boost_pct:.0f}% from injuries: {names}")
+            else:
+                factors.append(f"Usage boost +{boost_pct:.0f}% from teammate injuries.")
 
         # Sample size warning
         if proj.games_sample < 5:
-            factors.append(f"⚠️ Low sample ({proj.games_sample} games)")
+            factors.append(f"Note: Limited sample size with only {proj.games_sample} games of data this season.")
         elif proj.games_sample < 10:
-            factors.append(f"Limited data ({proj.games_sample} games)")
+            factors.append(f"He has played {proj.games_sample} games this season, providing moderate sample size.")
 
         # Consistency
         if proj.confidence >= 0.8:
-            factors.append("Very consistent performer")
+            factors.append("He has been very consistent in this stat category recently.")
         elif proj.confidence >= 0.6:
-            factors.append("Consistent performer")
+            factors.append("He has shown solid consistency in recent performances.")
         elif proj.confidence < 0.4:
-            factors.append("High variance player")
+            factors.append("He is a high-variance player, so this pick carries more risk.")
 
-        # Build summary
-        summary = " | ".join(factors[:4])  # Top 4 factors for summary
+        # Build summary - take the 2 most important sentences
+        summary = " ".join(factors[1:3]) if len(factors) > 2 else " ".join(factors)
 
         return summary, factors
 
@@ -534,22 +701,72 @@ class BetGenerator:
 
         return score
 
-    def _get_ml_probability(self, proj: Projection, side: str) -> float:
+    def _get_ml_probability(self, proj: Projection, side: str) -> Tuple[float, Dict]:
         """
         Get ML-adjusted probability for a projection.
 
-        Uses the ensemble ML filter trained on 17K+ historical predictions
-        to adjust probability estimates based on learned patterns.
+        V8: Uses hybrid models (best per prop from V5/V7), +958.3u backtest
+        V5: Uses tuned stacked ensemble models with prop-specific thresholds
+        Legacy: Uses ensemble ML filter trained on 17K+ historical predictions
 
-        Returns: ML-adjusted probability (0-1), or original probability if ML not loaded
+        Returns: Tuple of (probability, details_dict)
+            - probability: ML-adjusted probability (0-1)
+            - details_dict: Contains ml_prob, threshold, passes, side, tier
         """
-        if not self.ml_filter.loaded:
-            return proj.over_probability if side == "over" else proj.under_probability
-
         orig_prob = proj.over_probability if side == "over" else proj.under_probability
-        edge = proj.edge_over if side == "over" else proj.edge_under
+        prop_type = proj.prop_type.value
 
-        # Calculate diff_pct (percentage difference from line)
+        # No ML filter loaded - return original probability
+        if self.ml_filter is None or not self.ml_filter.loaded:
+            return orig_prob, {'ml_prob': orig_prob, 'passes': False, 'tier': 'NO_MODEL', 'side': side}
+
+        # Build features dict from projection (used by V8 and V5)
+        features = {
+            'dk_line': proj.dk_line,
+            'season_avg': getattr(proj, 'season_avg', proj.dk_line),
+            'l3_avg': getattr(proj, 'l3_avg', proj.projected_value),
+            'l5_avg': getattr(proj, 'l5_avg', proj.projected_value),
+            'l10_avg': getattr(proj, 'l10_avg', proj.projected_value),
+            'implied_over_prob': proj.implied_over_prob,
+            'proj_vs_line': proj.projected_value - proj.dk_line,
+            'proj_vs_line_pct': ((proj.projected_value - proj.dk_line) / proj.dk_line * 100) if proj.dk_line > 0 else 0,
+            'is_home': 1 if getattr(proj, 'is_home', False) else 0,
+            'proj_minutes': proj.projected_minutes,
+            'minutes_l5': proj.projected_minutes,
+            'has_tracking': 1,
+            'has_pbp': 1,
+            'has_ctg_player': 1,
+            'is_current_season': 1,
+            'games_played': getattr(proj, 'games_sample', 10),
+        }
+
+        # Prop-specific filter (V10 or any version with get_probability)
+        if hasattr(self.ml_filter, 'get_probability') and self.ml_filter.prop_models:
+            result = self.ml_filter.get_probability(prop_type, features)
+            # Handle both (prob, details) tuple and bare float return
+            if isinstance(result, tuple):
+                ml_prob, details = result
+            else:
+                ml_prob = result
+                details = {}
+
+            if side == "under":
+                ml_prob = 1 - ml_prob
+                details['side'] = 'under'
+
+            threshold = self.ml_filter.get_threshold(prop_type) if hasattr(self.ml_filter, 'get_threshold') else 0.55
+            passes = ml_prob >= threshold
+
+            return ml_prob, {
+                'ml_prob': ml_prob,
+                'threshold': threshold,
+                'passes': passes,
+                'side': side,
+                'tier': 'HIGH' if passes else 'STANDARD'
+            }
+
+        # Legacy filter
+        edge = proj.edge_over if side == "over" else proj.edge_under
         if proj.dk_line > 0:
             diff_pct = (proj.projected_value - proj.dk_line) / proj.dk_line * 100
         else:
@@ -562,45 +779,49 @@ class BetGenerator:
             diff_pct=diff_pct,
             line=proj.dk_line,
             is_over=(side == "over"),
-            prop_type=proj.prop_type.value
+            prop_type=prop_type,
+            implied_prob=proj.implied_over_prob if side == "over" else proj.implied_under_prob
         )
 
-        return ml_prob
+        return ml_prob, {'ml_prob': ml_prob, 'passes': ml_prob >= 0.55, 'tier': 'LEGACY', 'side': side}
+
+    def _get_ml_prob_simple(self, proj: Projection, side: str) -> float:
+        """Convenience method that just returns the probability (not details)."""
+        prob, _ = self._get_ml_probability(proj, side)
+        return prob
 
     def _is_high_confidence_leg(self, proj: Projection, side: str) -> Tuple[bool, str, float]:
         """
         Determine if a projection qualifies as a high-confidence leg.
 
-        Uses ML ENSEMBLE FILTER for probability adjustment:
-        - ML probability >= 58% = HIGH (68% expected hit rate)
-        - ML probability >= 60% = ELITE (72% expected hit rate)
-
-        Falls back to original logic if ML filter not loaded.
+        V8: Uses hybrid models with best model per prop:
+        - Points: V7 60% -> 56.9% hit rate, +150.9u
+        - Rebounds: V5 65% -> 58.5% hit rate, +153.5u
+        - Assists: V7 58% -> 58.4% hit rate, +144.9u
+        - Threes: V5 55% -> 60.9% hit rate, +306.4u
+        - Steals: V5 55% -> 59.4% hit rate, +115.1u
+        - Blocks: V7 52% -> 61.7% hit rate, +87.5u
 
         Returns: (is_high_conf, tier_label, ml_probability)
-        - tier_label: "ELITE" (ML>=60%), "HIGH" (ML>=58%), or "STANDARD"
+        - tier_label: "ELITE" (well above threshold), "HIGH" (above threshold), or "STANDARD"
         - ml_probability: The ML-adjusted probability for display
         """
         orig_prob = proj.over_probability if side == "over" else proj.under_probability
-        edge = proj.edge_over if side == "over" else proj.edge_under
         prop_type = proj.prop_type.value
 
-        # Absolute exclusions (keep threes exclusion - ML confirms they underperform)
-        if prop_type in self.HIGH_CONF_AVOID_PROPS:
-            return False, "STANDARD", orig_prob
+        # Get ML-adjusted probability (now returns tuple)
+        ml_prob, details = self._get_ml_probability(proj, side)
 
-        # Get ML-adjusted probability
-        ml_prob = self._get_ml_probability(proj, side)
+        # Use ML filter thresholds (works for V10, legacy, or any version)
+        if self.ml_filter is not None and self.ml_filter.loaded:
+            tier = details.get('tier', 'STANDARD')
+            passes = details.get('passes', False)
+            threshold = self.ml_filter.get_threshold(prop_type) if hasattr(self.ml_filter, 'get_threshold') else 0.55
+            elite_threshold = threshold + 0.05
 
-        # ML FILTER THRESHOLDS (based on backtest: 58%+ = 68% hit rate, 60%+ = 72%)
-        ML_HIGH_THRESHOLD = 0.58
-        ML_ELITE_THRESHOLD = 0.60
-
-        # If ML filter is loaded, use ML probability for filtering
-        if self.ml_filter.loaded:
-            if ml_prob >= ML_ELITE_THRESHOLD:
+            if ml_prob >= elite_threshold:
                 return True, "ELITE", ml_prob
-            elif ml_prob >= ML_HIGH_THRESHOLD:
+            elif passes or ml_prob >= threshold:
                 return True, "HIGH", ml_prob
             else:
                 return False, "STANDARD", ml_prob
@@ -612,6 +833,7 @@ class BetGenerator:
         if proj.confidence < self.HIGH_CONF_MIN_CONFIDENCE:
             return False, "STANDARD", orig_prob
 
+        edge = proj.edge_over if side == "over" else proj.edge_under
         if edge < self.HIGH_CONF_MIN_EDGE:
             return False, "STANDARD", orig_prob
 
@@ -738,7 +960,7 @@ class BetGenerator:
             selected = []
             used_players = set(exclude_players)
             teams_with_over_scoring = set()
-            SCORING_PROPS = {"points", "pts_rebs_asts"}
+            SCORING_PROPS = self.SCORING_PROPS
 
             # Sort: prefer less-used legs, then by score
             available = sorted(
@@ -873,7 +1095,11 @@ class BetGenerator:
                     implied_probability=0,
                     player_tier=leg["player_tier"],
                     minutes_avg=proj.projected_minutes,
-                    reasoning_factors=leg["reasoning_factors"]
+                    reasoning_factors=leg["reasoning_factors"],
+                    ml_prob=leg.get("ml_prob", 0.0),
+                    best_over_book=getattr(proj, 'best_over_book', 'draftkings'),
+                    best_under_book=getattr(proj, 'best_under_book', 'draftkings'),
+                    all_books=getattr(proj, 'all_books', {}),
                 ))
 
             # Calculate Kelly
@@ -916,6 +1142,7 @@ class BetGenerator:
         - Has DK market data
         """
         bets = []
+        seen_player_props = set()  # Prevent duplicate player+prop+side
 
         for proj in projections:
             # Skip if no market data
@@ -947,10 +1174,10 @@ class BetGenerator:
                 if cv > 0.55:
                     continue
 
-            # Calculate Kelly
+            # Calculate Kelly (uncertainty-adjusted when available)
             prob = proj.over_probability if side == "over" else proj.under_probability
             dk_odds = proj.dk_over_odds if side == "over" else proj.dk_under_odds
-            units = self.kelly.calculate_units(prob, dk_odds)
+            units = self._uncertainty_adjusted_units(proj, prob, dk_odds)
             ev = self.kelly.calculate_ev(prob, dk_odds)
             fair_odds = self.sgp.probability_to_american(prob)
 
@@ -959,6 +1186,7 @@ class BetGenerator:
             # Get player tier and detailed reasoning
             player_tier = self._classify_player_tier(proj)
             reasoning_summary, reasoning_factors = self._generate_reasoning(proj, side)
+            ml_prob = self._get_ml_prob_simple(proj, side)
 
             bet = Bet(
                 tier=BetTier.STEADY_SINGLE,
@@ -979,8 +1207,16 @@ class BetGenerator:
                 implied_probability=round(proj.implied_over_prob if side == "over" else proj.implied_under_prob, 3),
                 player_tier=player_tier,
                 minutes_avg=proj.projected_minutes,
-                reasoning_factors=reasoning_factors
+                reasoning_factors=reasoning_factors,
+                ml_prob=ml_prob,
+                best_over_book=getattr(proj, 'best_over_book', 'draftkings'),
+                best_under_book=getattr(proj, 'best_under_book', 'draftkings'),
+                all_books=getattr(proj, 'all_books', {}),
             )
+            bet_key = (bet.player, bet.prop_type, bet.side)
+            if bet_key in seen_player_props:
+                continue
+            seen_player_props.add(bet_key)
             bets.append(bet)
 
         # Sort by adjusted score (edge + UNDER preference + prop type quality)
@@ -1012,7 +1248,7 @@ class BetGenerator:
 
         for proj in projections:
             # Only pop-off plays
-            if proj.usage_boost <= 0:
+            if proj.usage_boost <= 1.01:
                 continue
 
             # Must have market data
@@ -1028,14 +1264,15 @@ class BetGenerator:
             if edge < self.TIER_2_MIN_EDGE:
                 continue
 
-            # Calculate Kelly (reduced for higher variance)
+            # Calculate Kelly (reduced for higher variance, uncertainty-adjusted)
             prob = proj.over_probability
             dk_odds = proj.dk_over_odds
-            units = self.kelly.calculate_units(prob, dk_odds) * 0.7  # 30% reduction
+            units = self._uncertainty_adjusted_units(proj, prob, dk_odds, extra_reduction=0.7)
             ev = self.kelly.calculate_ev(prob, dk_odds)
             fair_odds = self.sgp.probability_to_american(prob)
 
             prop_name = self._get_prop_name(proj.prop_type)
+            ml_prob = self._get_ml_prob_simple(proj, "over")
             bet = Bet(
                 tier=BetTier.POPOFF_SPECIAL,
                 description=f"POP-OFF: {proj.player_name} OVER {proj.dk_line} {prop_name}",
@@ -1049,11 +1286,15 @@ class BetGenerator:
                 confidence=proj.confidence * 0.8,  # Reduced confidence for pop-offs
                 recommended_units=round(units, 2),
                 ev_per_unit=ev,
-                reasoning=f"Usage boost: +{proj.usage_boost:.1f} from injuries. "
+                reasoning=f"Usage boost: +{(proj.usage_boost - 1.0) * 100:.0f}% from injuries. "
                          f"Projection: {proj.projected_value:.1f} vs line {proj.dk_line}",
                 projected_value=proj.projected_value,
                 our_probability=round(prob, 3),
-                implied_probability=round(proj.implied_over_prob, 3)
+                implied_probability=round(proj.implied_over_prob, 3),
+                ml_prob=ml_prob,
+                best_over_book=getattr(proj, 'best_over_book', 'draftkings'),
+                best_under_book=getattr(proj, 'best_under_book', 'draftkings'),
+                all_books=getattr(proj, 'all_books', {}),
             )
             bets.append(bet)
 
@@ -1076,6 +1317,10 @@ class BetGenerator:
 
         for pair in correlations:
             if pair.correlation < self.TIER_3_MIN_CORRELATION:
+                continue
+
+            # Skip self-correlations and same-player pairs
+            if pair.player_a == pair.player_b:
                 continue
 
             # Find matching projections
@@ -1104,7 +1349,7 @@ class BetGenerator:
 
             # SAME-TEAM SCORING CONSTRAINT
             # Don't pair two OVER scoring props from the same team
-            SCORING_PROPS = {"points", "pts_rebs_asts"}
+            SCORING_PROPS = self.SCORING_PROPS
             both_over_scoring = (
                 side_a == "over" and side_b == "over" and
                 proj_a.prop_type.value in SCORING_PROPS and
@@ -1162,6 +1407,8 @@ class BetGenerator:
             tier_b = self._classify_player_tier(proj_b)
             reasoning_a, factors_a = self._generate_reasoning(proj_a, side_a)
             reasoning_b, factors_b = self._generate_reasoning(proj_b, side_b)
+            ml_prob_a = self._get_ml_prob_simple(proj_a, side_a)
+            ml_prob_b = self._get_ml_prob_simple(proj_b, side_b)
 
             leg_a = Bet(
                 tier=BetTier.CORRELATED_PARLAY,
@@ -1182,7 +1429,11 @@ class BetGenerator:
                 implied_probability=0,
                 player_tier=tier_a,
                 minutes_avg=proj_a.projected_minutes,
-                reasoning_factors=factors_a
+                reasoning_factors=factors_a,
+                ml_prob=ml_prob_a,
+                best_over_book=getattr(proj_a, 'best_over_book', 'draftkings'),
+                best_under_book=getattr(proj_a, 'best_under_book', 'draftkings'),
+                all_books=getattr(proj_a, 'all_books', {}),
             )
 
             leg_b = Bet(
@@ -1204,7 +1455,11 @@ class BetGenerator:
                 implied_probability=0,
                 player_tier=tier_b,
                 minutes_avg=proj_b.projected_minutes,
-                reasoning_factors=factors_b
+                reasoning_factors=factors_b,
+                ml_prob=ml_prob_b,
+                best_over_book=getattr(proj_b, 'best_over_book', 'draftkings'),
+                best_under_book=getattr(proj_b, 'best_under_book', 'draftkings'),
+                all_books=getattr(proj_b, 'all_books', {}),
             )
 
             parlay = ParlayBet(
@@ -1270,17 +1525,19 @@ class BetGenerator:
             quality_score = self._calculate_quality_score(proj, best_edge, side)
             player_tier = self._classify_player_tier(proj)
             reasoning_summary, reasoning_factors = self._generate_reasoning(proj, side)
+            ml_prob = self._get_ml_prob_simple(proj, side)
 
             viable_legs.append({
                 "proj": proj,
                 "side": side,
-                "prob": min(0.68, prob),  # Cap at 68% (calibrated max)
+                "prob": prob,  # Probability already damped in EdgeCalculator
                 "edge": best_edge,
                 "odds": proj.dk_over_odds if side == "over" else proj.dk_under_odds,
                 "quality": quality_score,
                 "tier": player_tier,
                 "reasoning": reasoning_summary,
-                "reasoning_factors": reasoning_factors
+                "reasoning_factors": reasoning_factors,
+                "ml_prob": ml_prob
             })
 
         # Sort by QUALITY SCORE (balances edge, volume, and player tier)
@@ -1359,7 +1616,7 @@ class BetGenerator:
             # Track teams with OVER scoring picks (points, PRA)
             # Only allow 1 OVER scoring pick per team
             teams_with_over_scoring = set()
-            SCORING_PROPS = {"points", "pts_rebs_asts"}
+            SCORING_PROPS = self.SCORING_PROPS
 
             for idx, leg, score in available:
                 if len(parlay_legs) >= num_legs:
@@ -1535,7 +1792,11 @@ class BetGenerator:
                             implied_probability=0,
                             player_tier=leg["tier"],
                             minutes_avg=proj.projected_minutes,
-                            reasoning_factors=leg["reasoning_factors"]
+                            reasoning_factors=leg["reasoning_factors"],
+                            ml_prob=leg.get("ml_prob", 0.0),
+                            best_over_book=getattr(proj, 'best_over_book', 'draftkings'),
+                            best_under_book=getattr(proj, 'best_under_book', 'draftkings'),
+                            all_books=getattr(proj, 'all_books', {}),
                         ))
 
                     parlay = ParlayBet(
@@ -1591,7 +1852,13 @@ class BetGenerator:
         all_singles = self.generate_tier_1_singles(projections)
         best_singles = all_singles[:self.MAX_SINGLES]
 
-        # Generate HIGH-CONFIDENCE PARLAYS (NEW - targeting 65%+ leg hit rate)
+        # Generate pop-off specials (injury usage boost plays)
+        # Dedup against best_singles — same player+prop shouldn't appear in both
+        best_single_keys = set((b.player, b.prop_type, b.side) for b in best_singles)
+        popoff_singles = [p for p in self.generate_tier_2_popoffs(projections)
+                         if (p.player, p.prop_type, p.side) not in best_single_keys]
+
+        # Generate HIGH-CONFIDENCE PARLAYS (targeting 65%+ leg hit rate)
         # These are the primary recommendation - diverse 2-leg parlays with elite legs
         high_confidence_parlays = self.generate_high_confidence_parlays(
             projections,
@@ -1603,54 +1870,66 @@ class BetGenerator:
         two_leg_parlays = self.generate_tier_3_parlays(projections, correlations)
         multi_leg_parlays = self.generate_multi_leg_parlays(projections, correlations, min_legs=3, max_legs=6)
 
-        # Exclude legs already used in high-confidence parlays from safe parlays
-        high_conf_legs = set()
-        for p in high_confidence_parlays:
-            for leg in p.legs:
-                high_conf_legs.add((leg.player, leg.prop_type, leg.side))
+        # Deduplicate ALL parlays across generators
+        # A parlay is a "duplicate" if it has the exact same set of (player, prop, side) legs
+        def parlay_key(p):
+            legs = tuple(sorted((leg.player, leg.prop_type, leg.side) for leg in p.legs))
+            return legs
 
-        # Categorize parlays by leg count (excluding high-conf duplicates)
-        # Safe: 2-3 legs
-        safe_parlays = []
+        seen_parlays = set()
+        def is_new_parlay(p):
+            key = parlay_key(p)
+            if key in seen_parlays:
+                return False
+            seen_parlays.add(key)
+            return True
+
+        # High-confidence first (highest priority)
+        high_confidence_parlays = [p for p in high_confidence_parlays if is_new_parlay(p)]
+
+        # Safe: 2-3 legs (exclude duplicates of high-conf)
+        safe_candidates = []
         for p in two_leg_parlays:
-            # Check if this parlay duplicates a high-conf parlay
-            parlay_legs = set((leg.player, leg.prop_type, leg.side) for leg in p.legs)
-            if not parlay_legs.issubset(high_conf_legs):
-                safe_parlays.append(p)
+            if is_new_parlay(p):
+                safe_candidates.append(p)
         for p in multi_leg_parlays:
-            if len(p.legs) == 3:
-                safe_parlays.append(p)
-        safe_parlays.sort(key=lambda x: x.true_probability, reverse=True)
-        safe_parlays = safe_parlays[:self.MAX_SAFE_PARLAYS]
+            if len(p.legs) == 3 and is_new_parlay(p):
+                safe_candidates.append(p)
+        safe_candidates.sort(key=lambda x: x.true_probability, reverse=True)
+        safe_parlays = safe_candidates[:self.MAX_SAFE_PARLAYS]
 
-        # Standard: 3-4 legs (but prioritize 4-leg for this tier)
-        standard_parlays = [p for p in multi_leg_parlays if len(p.legs) == 4]
-        # Add some 3-leg if not enough 4-leg
-        if len(standard_parlays) < self.MAX_STANDARD_PARLAYS:
-            three_leg = [p for p in multi_leg_parlays if len(p.legs) == 3 and p not in safe_parlays]
-            standard_parlays.extend(three_leg)
-        standard_parlays.sort(key=lambda x: (-len(x.legs), -x.true_probability))
-        standard_parlays = standard_parlays[:self.MAX_STANDARD_PARLAYS]
+        # Standard: 3-4 legs
+        standard_candidates = []
+        for p in multi_leg_parlays:
+            if len(p.legs) in (3, 4) and is_new_parlay(p):
+                standard_candidates.append(p)
+        standard_candidates.sort(key=lambda x: (-len(x.legs), -x.true_probability))
+        standard_parlays = standard_candidates[:self.MAX_STANDARD_PARLAYS]
 
         # Longshot: 5-6 legs
-        longshot_parlays = [p for p in multi_leg_parlays if len(p.legs) >= 5]
-        longshot_parlays.sort(key=lambda x: x.edge_percent, reverse=True)
-        longshot_parlays = longshot_parlays[:self.MAX_LONGSHOT_PARLAYS]
+        longshot_candidates = [p for p in multi_leg_parlays if len(p.legs) >= 5 and is_new_parlay(p)]
+        longshot_candidates.sort(key=lambda x: x.edge_percent, reverse=True)
+        longshot_parlays = longshot_candidates[:self.MAX_LONGSHOT_PARLAYS]
 
         # Calculate totals
         all_parlays = high_confidence_parlays + safe_parlays + standard_parlays + longshot_parlays
         total_units = (
             sum(b.recommended_units for b in best_singles) +
+            sum(b.recommended_units for b in popoff_singles) +
             sum(p.recommended_units for p in all_parlays)
         )
 
         allocation = {
             "best_singles": sum(b.recommended_units for b in best_singles),
+            "popoff_singles": sum(b.recommended_units for b in popoff_singles),
             "high_confidence_parlays": sum(p.recommended_units for p in high_confidence_parlays),
             "safe_parlays": sum(p.recommended_units for p in safe_parlays),
             "standard_parlays": sum(p.recommended_units for p in standard_parlays),
             "longshot_parlays": sum(p.recommended_units for p in longshot_parlays),
         }
+
+        # Log predictions for future ML retraining
+        self._log_predictions(projections, analysis_results.get("matchup", "Unknown"))
 
         return GameRecommendations(
             matchup=analysis_results.get("matchup", "Unknown"),
@@ -1659,6 +1938,7 @@ class BetGenerator:
             spread=analysis_results.get("spread", 0),
             total=analysis_results.get("total", 220),
             best_singles=best_singles,
+            popoff_singles=popoff_singles,
             high_confidence_parlays=high_confidence_parlays,
             safe_parlays=safe_parlays,
             standard_parlays=standard_parlays,
@@ -1666,6 +1946,55 @@ class BetGenerator:
             total_recommended_units=round(total_units, 2),
             bankroll_allocation=allocation
         )
+
+    def _log_predictions(self, projections: List[Projection], matchup: str):
+        """Log v1 rule-based predictions to JSONL.
+
+        NOTE: This logs v1 model output only. The v2 line-anchor model
+        predictions are logged separately by web/engine.py into
+        outputs/v2_predictions_{season}.jsonl. Use grade_predictions.py
+        to evaluate v2 picks against actual outcomes.
+        """
+        import os
+        os.makedirs("outputs", exist_ok=True)
+        season = datetime.now().year if datetime.now().month >= 10 else datetime.now().year - 1
+        log_file = f"outputs/v1_predictions_{season}-{str(season+1)[-2:]}.jsonl"
+        try:
+            with open(log_file, "a") as f:
+                for proj in projections:
+                    if proj.dk_line == 0:
+                        continue
+                    # Sanity checks: skip garbage entries
+                    edge_over = round(proj.edge_over, 3)
+                    edge_under = round(proj.edge_under, 3)
+                    if not (-0.50 <= edge_over <= 0.50):
+                        continue
+                    if not (-0.50 <= edge_under <= 0.50):
+                        continue
+                    if proj.projected_value <= 0:
+                        continue
+                    if proj.confidence <= 0:
+                        continue
+                    record = {
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "matchup": matchup,
+                        "player": proj.player_name,
+                        "prop_type": proj.prop_type.value,
+                        "line": proj.dk_line,
+                        "projection": round(proj.projected_value, 2),
+                        "over_prob": round(proj.over_probability, 4),
+                        "edge_over": edge_over,
+                        "edge_under": edge_under,
+                        "dk_over_odds": proj.dk_over_odds,
+                        "dk_under_odds": proj.dk_under_odds,
+                        "confidence": round(proj.confidence, 3),
+                        "std_dev": round(proj.std_dev, 2),
+                        "ml_filter_version": self.ml_filter_version,
+                        "model": "v1_rules",
+                    }
+                    f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            logger.debug(f"Failed to log v1 predictions: {e}")
 
     def _get_tier_label(self, bet: Bet) -> str:
         """Get a short label for player tier"""
@@ -1680,12 +2009,17 @@ class BetGenerator:
         """Format recommendations with detailed reasoning for each pick"""
         total_parlays = len(recs.high_confidence_parlays) + len(recs.safe_parlays) + len(recs.standard_parlays) + len(recs.longshot_parlays)
 
+        # Check ML model status
+        ml_status = f"ML Filter: {self.ml_filter_version}"
+        if self.ml_filter and hasattr(self.ml_filter, 'is_stale') and self.ml_filter.is_stale:
+            ml_status += f" (STALE — {self.ml_filter.model_age_days}d old, using rule-based projections)"
+
         lines = [
             "",
             "=" * 70,
             f"  GAME: {recs.matchup}",
             f"  Spread: {recs.spread:+.1f} | Total: {recs.total}",
-            f"  Generated: {recs.timestamp.strftime('%Y-%m-%d %H:%M')}",
+            f"  Generated: {recs.timestamp.strftime('%Y-%m-%d %H:%M')} | {ml_status}",
             "=" * 70,
             "",
         ]
@@ -1706,7 +2040,8 @@ class BetGenerator:
                 for j, leg in enumerate(parlay.legs, 1):
                     tier_label = self._get_tier_label(leg)
                     lines.append(f"    Leg {j}: {tier_label} {leg.description}")
-                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line} | Leg Prob: {leg.our_probability*100:.0f}%")
+                    ml_display = f" | ML: {leg.ml_prob*100:.0f}%" if leg.ml_prob > 0 else ""
+                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line} | Leg Prob: {leg.our_probability*100:.0f}%{ml_display}")
                     lines.append(f"           {leg.reasoning}")
                     lines.append("")
                 lines.append("-" * 40)
@@ -1721,9 +2056,23 @@ class BetGenerator:
             lines.append("-" * 60)
             for bet in recs.best_singles:
                 tier_label = self._get_tier_label(bet)
+                ml_display = f" | ML: {bet.ml_prob*100:.0f}%" if bet.ml_prob > 0 else ""
                 lines.extend([
                     f"  {tier_label} {bet.description}",
-                    f"    Line: {bet.line} | Proj: {bet.projected_value:.1f} | Edge: {bet.edge_percent:.1f}%",
+                    f"    Line: {bet.line} | Proj: {bet.projected_value:.1f} | Edge: {bet.edge_percent:.1f}%{ml_display}",
+                    f"    Why: {bet.reasoning}",
+                    ""
+                ])
+
+        # Pop-Off Specials (injury usage boost plays)
+        if recs.popoff_singles:
+            lines.append(f"POP-OFF SPECIALS ({len(recs.popoff_singles)} injury boost plays)")
+            lines.append("-" * 60)
+            for bet in recs.popoff_singles:
+                ml_display = f" | ML: {bet.ml_prob*100:.0f}%" if bet.ml_prob > 0 else ""
+                lines.extend([
+                    f"  {bet.description}",
+                    f"    Line: {bet.line} | Proj: {bet.projected_value:.1f} | Edge: {bet.edge_percent:.1f}%{ml_display}",
                     f"    Why: {bet.reasoning}",
                     ""
                 ])
@@ -1740,7 +2089,8 @@ class BetGenerator:
                 for j, leg in enumerate(parlay.legs, 1):
                     tier_label = self._get_tier_label(leg)
                     lines.append(f"    Leg {j}: {tier_label} {leg.description}")
-                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line}")
+                    ml_display = f" | ML: {leg.ml_prob*100:.0f}%" if leg.ml_prob > 0 else ""
+                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line}{ml_display}")
                     lines.append(f"           {leg.reasoning}")
                     lines.append("")
                 lines.append("")
@@ -1759,7 +2109,8 @@ class BetGenerator:
                 for j, leg in enumerate(parlay.legs, 1):
                     tier_label = self._get_tier_label(leg)
                     lines.append(f"    Leg {j}: {tier_label} {leg.description}")
-                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line}")
+                    ml_display = f" | ML: {leg.ml_prob*100:.0f}%" if leg.ml_prob > 0 else ""
+                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line}{ml_display}")
                     lines.append(f"           {leg.reasoning}")
                     lines.append("")
                 lines.append("")
@@ -1778,7 +2129,8 @@ class BetGenerator:
                 for j, leg in enumerate(parlay.legs, 1):
                     tier_label = self._get_tier_label(leg)
                     lines.append(f"    Leg {j}: {tier_label} {leg.description}")
-                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line}")
+                    ml_display = f" | ML: {leg.ml_prob*100:.0f}%" if leg.ml_prob > 0 else ""
+                    lines.append(f"           Proj: {leg.projected_value:.1f} vs Line: {leg.line}{ml_display}")
                     lines.append(f"           {leg.reasoning}")
                     lines.append("")
                 lines.append("")

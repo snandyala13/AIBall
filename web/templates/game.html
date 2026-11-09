@@ -1,0 +1,444 @@
+{% extends "base.html" %}
+{% block title %}PropTerminal - Game Analysis{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="/" class="back-link">&larr; Dashboard</a>
+    <h1 id="game-title">Game Analysis</h1>
+    <p class="text-muted" id="game-subtitle">Loading...</p>
+</div>
+
+<div id="game-loading" class="loading-container">
+    <div class="spinner"></div>
+    <p>Running full analysis... This may take 15-30 seconds.</p>
+</div>
+
+<div id="game-error" class="empty-state" style="display:none;">
+    <p>Error loading game data.</p>
+</div>
+
+<div id="game-content" style="display:none;">
+    <!-- Recommendations Summary -->
+    <div class="recs-summary" id="recs-summary"></div>
+
+    <!-- Line Signals Summary -->
+    <div id="line-signals-summary" style="display:none;"></div>
+
+    <!-- Results Summary (for finished games) -->
+    <div class="section" id="results-summary-section" style="display:none;">
+        <h2 class="section-title">Graded Results</h2>
+        <div id="game-results-container"></div>
+    </div>
+
+    <!-- V2 ML Predictions -->
+    <section class="section v2-section" id="v2-section" style="display:none;">
+        <h2 class="section-title"><span class="v2-badge">v2 ML</span> Model Predictions</h2>
+        <p class="section-desc">Line-anchor LightGBM predictions with uncertainty bands</p>
+        <div id="v2-container"></div>
+    </section>
+
+    <!-- Best Singles -->
+    <section class="section" id="singles-section" style="display:none;">
+        <h2 class="section-title">Best Singles</h2>
+        <div class="bets-grid" id="singles-container"></div>
+    </section>
+
+    <!-- Pop-off Specials -->
+    <section class="section" id="popoffs-section" style="display:none;">
+        <h2 class="section-title">Pop-Off Specials</h2>
+        <p class="section-desc">Injury-boosted usage plays</p>
+        <div class="bets-grid" id="popoffs-container"></div>
+    </section>
+
+    <!-- Parlays -->
+    <section class="section" id="parlays-section" style="display:none;">
+        <h2 class="section-title">Correlated Parlays</h2>
+        <div id="parlays-container"></div>
+    </section>
+
+    <!-- Full Projections Table -->
+    <section class="section">
+        <h2 class="section-title">
+            All Projections
+            <span class="section-subtitle" id="proj-count"></span>
+        </h2>
+        <div class="table-controls">
+            <select id="sort-select" onchange="sortProjections()">
+                <option value="edge_desc">Edge (High to Low)</option>
+                <option value="edge_asc">Edge (Low to High)</option>
+                <option value="player_asc">Player (A-Z)</option>
+                <option value="prop_asc">Prop Type</option>
+                <option value="proj_desc">Projection (High to Low)</option>
+            </select>
+            <select id="team-filter" onchange="filterProjections()">
+                <option value="all">All Teams</option>
+            </select>
+        </div>
+        <div class="table-wrapper">
+            <table class="proj-table" id="proj-table">
+                <thead>
+                    <tr>
+                        <th>Player</th>
+                        <th>Prop</th>
+                        <th>Line</th>
+                        <th>Proj</th>
+                        <th>Edge%</th>
+                        <th>Prob</th>
+                        <th>Side</th>
+                        <th>DK Odds</th>
+                        <th id="results-col-header" style="display:none;">Result</th>
+                    </tr>
+                </thead>
+                <tbody id="proj-tbody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- CLV Stats -->
+    <div id="clv-stats-container" style="display:none;"></div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var gameId = {{ game_id }};
+var allProjections = [];
+var gameResults = {};  // keyed by "player|prop_type"
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadGameAnalysis(gameId);
+});
+
+function loadGameAnalysis(id) {
+    var loading = document.getElementById('game-loading');
+    var content = document.getElementById('game-content');
+    var error = document.getElementById('game-error');
+
+    loading.style.display = 'flex';
+    content.style.display = 'none';
+    error.style.display = 'none';
+
+    fetch('/api/game/' + id + '/analyze')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            loading.style.display = 'none';
+
+            if (data.error) {
+                error.querySelector('p').textContent = 'Error: ' + data.error;
+                error.style.display = 'block';
+                return;
+            }
+
+            document.getElementById('game-title').textContent = data.matchup || 'Game Analysis';
+            var spreadStr = data.spread ? (data.spread > 0 ? '+' + data.spread.toFixed(1) : data.spread.toFixed(1)) : 'N/A';
+            document.getElementById('game-subtitle').textContent =
+                'Spread: ' + spreadStr + ' | Total: ' + (data.total || 'N/A');
+
+            content.style.display = 'block';
+
+            // Render recommendations
+            renderRecsSummary(data);
+
+            if (data.best_singles && data.best_singles.length > 0) {
+                document.getElementById('singles-section').style.display = 'block';
+                renderSingles(document.getElementById('singles-container'), data.best_singles);
+            }
+
+            if (data.popoff_singles && data.popoff_singles.length > 0) {
+                document.getElementById('popoffs-section').style.display = 'block';
+                renderPopoffs(document.getElementById('popoffs-container'), data.popoff_singles);
+            }
+
+            var allParlays = (data.high_confidence_parlays || [])
+                .concat(data.safe_parlays || [])
+                .concat(data.standard_parlays || [])
+                .concat(data.longshot_parlays || []);
+
+            if (allParlays.length > 0) {
+                document.getElementById('parlays-section').style.display = 'block';
+                renderParlays(document.getElementById('parlays-container'), allParlays);
+            }
+
+            // V2 ML predictions
+            var v2Preds = data.v2_predictions || [];
+            if (v2Preds.length > 0) {
+                document.getElementById('v2-section').style.display = 'block';
+                renderV2Predictions(document.getElementById('v2-container'), v2Preds);
+            }
+
+            // Projections table
+            allProjections = data.projections || [];
+            document.getElementById('proj-count').textContent = '(' + allProjections.length + ' props)';
+            buildTeamFilter(allProjections);
+            renderProjectionsTable(allProjections);
+
+            // Line signals and CLV stats
+            if (typeof renderLineSignalsSummary === 'function') {
+                renderLineSignalsSummary(data);
+            }
+            if (typeof renderClvStats === 'function') {
+                renderClvStats(data);
+            }
+
+            // Try to fetch results for this game
+            loadGameResults(id);
+        })
+        .catch(function(err) {
+            loading.style.display = 'none';
+            error.querySelector('p').textContent = 'Error: ' + err.message;
+            error.style.display = 'block';
+        });
+}
+
+function loadGameResults(id) {
+    fetch('/api/game/' + id + '/results')
+        .then(function(r) {
+            if (r.status === 404) return null;
+            return r.json();
+        })
+        .then(function(data) {
+            if (!data || data.error) return;
+
+            var results = data.results || [];
+            if (results.length === 0) return;
+
+            // Build lookup map
+            results.forEach(function(r) {
+                var key = r.player.toLowerCase() + '|' + r.prop_type;
+                gameResults[key] = r;
+            });
+
+            // Show results summary section
+            var section = document.getElementById('results-summary-section');
+            var container = document.getElementById('game-results-container');
+            section.style.display = 'block';
+
+            var summary = data.summary || {};
+            var profitClass = summary.total_profit >= 0 ? 'positive' : 'negative';
+            var profitStr = summary.total_profit >= 0 ? '+$' + (summary.total_profit * 100).toFixed(0) : '-$' + Math.abs(summary.total_profit * 100).toFixed(0);
+
+            container.innerHTML =
+                '<div class="graded-results-summary">' +
+                    '<div class="graded-results-stats">' +
+                        '<span class="graded-stat-hit">' + summary.hits + ' Hits</span>' +
+                        '<span class="graded-stat-miss">' + summary.misses + ' Misses</span>' +
+                        (summary.pushes > 0 ? '<span>' + summary.pushes + ' Pushes</span>' : '') +
+                        '<span>' + summary.hits + '/' + summary.total + ' (' + summary.hit_rate.toFixed(1) + '%)</span>' +
+                    '</div>' +
+                    '<span class="graded-profit ' + profitClass + '">' + profitStr + '</span>' +
+                '</div>';
+
+            // Show Results column header and re-render table
+            document.getElementById('results-col-header').style.display = '';
+            renderProjectionsTable(allProjections);
+
+            // Smooth scroll to results
+            section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        })
+        .catch(function() {
+            // Silently fail
+        });
+}
+
+function renderRecsSummary(data) {
+    var container = document.getElementById('recs-summary');
+    var singlesCount = (data.best_singles || []).length;
+    var popoffsCount = (data.popoff_singles || []).length;
+    var parlaysCount = (data.high_confidence_parlays || []).length +
+                       (data.safe_parlays || []).length +
+                       (data.standard_parlays || []).length +
+                       (data.longshot_parlays || []).length;
+
+    var v2Count = (data.v2_predictions || []).filter(function(p) {
+        return p.edge_percent > 0 && p.side !== 'pass';
+    }).length;
+    var modelVersion = data.model_version || 'v1';
+    var modelBadge = modelVersion === 'v2'
+        ? '<div class="stat-box"><span class="stat-value"><span class="v2-badge">v2 ML</span> ' + v2Count + '</span><span class="stat-label">ML Picks</span></div>'
+        : '';
+
+    container.innerHTML =
+        '<div class="summary-row">' +
+            modelBadge +
+            '<div class="stat-box"><span class="stat-value">' + singlesCount + '</span><span class="stat-label">Singles</span></div>' +
+            '<div class="stat-box"><span class="stat-value">' + popoffsCount + '</span><span class="stat-label">Pop-Offs</span></div>' +
+            '<div class="stat-box"><span class="stat-value">' + parlaysCount + '</span><span class="stat-label">Parlays</span></div>' +
+            '<div class="stat-box"><span class="stat-value">' + (data.total_recommended_units || 0).toFixed(1) + 'u</span><span class="stat-label">Total Units</span></div>' +
+        '</div>';
+}
+
+function buildTeamFilter(projections) {
+    var teams = {};
+    projections.forEach(function(p) {
+        if (p.team) teams[p.team] = true;
+    });
+    var select = document.getElementById('team-filter');
+    select.innerHTML = '<option value="all">All Teams</option>';
+    Object.keys(teams).sort().forEach(function(team) {
+        var opt = document.createElement('option');
+        opt.value = team;
+        opt.textContent = team;
+        select.appendChild(opt);
+    });
+}
+
+function sortProjections() {
+    var sorted = allProjections.slice();
+    var sortKey = document.getElementById('sort-select').value;
+
+    if (sortKey === 'edge_desc') {
+        sorted.sort(function(a, b) { return Math.max(Math.abs(b.edge_over), Math.abs(b.edge_under)) - Math.max(Math.abs(a.edge_over), Math.abs(a.edge_under)); });
+    } else if (sortKey === 'edge_asc') {
+        sorted.sort(function(a, b) { return Math.max(Math.abs(a.edge_over), Math.abs(a.edge_under)) - Math.max(Math.abs(b.edge_over), Math.abs(b.edge_under)); });
+    } else if (sortKey === 'player_asc') {
+        sorted.sort(function(a, b) { return a.player_name.localeCompare(b.player_name); });
+    } else if (sortKey === 'prop_asc') {
+        sorted.sort(function(a, b) { return a.prop_type.localeCompare(b.prop_type); });
+    } else if (sortKey === 'proj_desc') {
+        sorted.sort(function(a, b) { return b.projected_value - a.projected_value; });
+    }
+
+    filterProjections(sorted);
+}
+
+function filterProjections(sorted) {
+    var teamFilter = document.getElementById('team-filter').value;
+    var projs = sorted || allProjections.slice();
+
+    if (teamFilter !== 'all') {
+        projs = projs.filter(function(p) { return p.team === teamFilter; });
+    }
+
+    renderProjectionsTable(projs);
+}
+
+function renderV2Predictions(container, predictions) {
+    // Sort by edge descending, filter to actionable picks
+    var picks = predictions.filter(function(p) {
+        return p.edge_percent > 0 && p.side !== 'pass';
+    });
+    picks.sort(function(a, b) { return b.edge_percent - a.edge_percent; });
+
+    var html = '<div class="v2-predictions-grid">';
+
+    picks.forEach(function(pred) {
+        var edge = pred.edge_percent || 0;
+        var edgeClass = Math.abs(edge) >= 8 ? 'edge-high' :
+                        (Math.abs(edge) >= 5 ? 'edge-medium' : 'edge-low');
+        var sideClass = pred.side === 'over' ? 'side-over' : 'side-under';
+        var stars = pred.confidence_stars || 1;
+        var starStr = '';
+        for (var i = 0; i < 5; i++) {
+            starStr += i < stars ? '\u2605' : '\u2606';
+        }
+
+        var predicted = pred.predicted_value || 0;
+        var line = pred.line || 0;
+        var p10 = pred.p10 || 0;
+        var p90 = pred.p90 || 0;
+        var diff = predicted - line;
+        var diffStr = diff >= 0 ? '+' + diff.toFixed(1) : diff.toFixed(1);
+        var adjustment = pred.predicted_adjustment || 0;
+
+        var signalHtml = '';
+        var crossSignal = pred.cross_book_signal || 'NEUTRAL';
+        if (crossSignal !== 'NEUTRAL') {
+            signalHtml = ' <span class="line-signal-badge line-signal-cross-book">' + crossSignal.replace('_', ' ') + '</span>';
+        }
+
+        var copyText = pred.player + ' ' + pred.side.toUpperCase() + ' ' + line.toFixed(1) + ' ' + formatPropType(pred.prop_type);
+
+        html += '<div class="v2-pred-card ' + edgeClass + '">' +
+            '<div class="v2-pred-header">' +
+                '<a href="/player/' + encodeURIComponent(pred.player) + '" class="bet-player">' + pred.player + '</a>' +
+                signalHtml +
+                '<span class="bet-edge ' + edgeClass + '">' + edge.toFixed(1) + '% edge</span>' +
+            '</div>' +
+            '<div class="v2-pred-prop">' +
+                formatPropType(pred.prop_type) + ' ' +
+                '<span class="side-badge ' + sideClass + '">' + pred.side.toUpperCase() + '</span> ' +
+                line.toFixed(1) +
+            '</div>' +
+            '<div class="v2-pred-model">' +
+                '<div class="v2-pred-row">' +
+                    '<span class="v2-pred-label">Model</span>' +
+                    '<span class="v2-pred-value">' + predicted.toFixed(1) + ' <span class="v2-band">[' + p10.toFixed(1) + ' - ' + p90.toFixed(1) + ']</span></span>' +
+                '</div>' +
+                '<div class="v2-pred-row">' +
+                    '<span class="v2-pred-label">vs Line</span>' +
+                    '<span class="v2-pred-value ' + (diff >= 0 ? 'v2-diff-over' : 'v2-diff-under') + '">' +
+                        diffStr + ' (' + pred.side.toUpperCase() + ' signal)' +
+                    '</span>' +
+                '</div>' +
+                '<div class="v2-pred-row">' +
+                    '<span class="v2-pred-label">Confidence</span>' +
+                    '<span class="v2-confidence">' + starStr + '</span>' +
+                '</div>' +
+                '<div class="v2-pred-row">' +
+                    '<span class="v2-pred-label">Our Prob</span>' +
+                    '<span class="v2-pred-value">' + ((pred.our_probability || 0.5) * 100).toFixed(1) + '%</span>' +
+                '</div>' +
+            '</div>' +
+            '<div class="v2-pred-footer">' +
+                '<span>' + (pred.recommended_units || 0).toFixed(1) + 'u</span>' +
+                '<span>DK ' + formatOdds(pred.dk_odds) + '</span>' +
+                '<button class="btn-copy" onclick="copyToClipboard(\'' + escapeHtml(copyText) + '\', event)">Copy</button>' +
+            '</div>' +
+        '</div>';
+    });
+
+    html += '</div>';
+
+    // Show count of total v2 predictions vs actionable
+    var totalCount = predictions.length;
+    html = '<div class="v2-summary">Analyzed ' + totalCount + ' props, found ' + picks.length + ' with positive edge</div>' + html;
+
+    container.innerHTML = html;
+}
+
+function renderProjectionsTable(projections) {
+    var tbody = document.getElementById('proj-tbody');
+    var hasResults = Object.keys(gameResults).length > 0;
+    tbody.innerHTML = '';
+
+    projections.forEach(function(p) {
+        var bestEdge = Math.abs(p.edge_over) > Math.abs(p.edge_under) ? p.edge_over : p.edge_under;
+        var side = p.edge_over > p.edge_under ? 'OVER' : 'UNDER';
+        var prob = side === 'OVER' ? p.over_probability : p.under_probability;
+        var odds = side === 'OVER' ? p.dk_over_odds : p.dk_under_odds;
+        var edgePct = (bestEdge * 100).toFixed(1);
+        var edgeClass = Math.abs(bestEdge) >= 0.05 ? 'edge-high' : (Math.abs(bestEdge) >= 0.03 ? 'edge-medium' : 'edge-low');
+
+        // Look up result
+        var resultHtml = '';
+        if (hasResults) {
+            var key = p.player_name.toLowerCase() + '|' + p.prop_type;
+            var result = gameResults[key];
+            if (result) {
+                var resultClass = result.push ? 'result-push' : (result.hit ? 'result-hit' : 'result-miss');
+                var resultIcon = result.push ? '&#8722;' : (result.hit ? '&#10003;' : '&#10007;');
+                resultHtml = '<td class="' + resultClass + '">' + resultIcon + ' ' + result.actual.toFixed(1) + '</td>';
+            } else {
+                resultHtml = '<td class="text-muted">--</td>';
+            }
+        }
+
+        var tr = document.createElement('tr');
+        tr.className = edgeClass;
+        tr.innerHTML =
+            '<td><a href="/player/' + encodeURIComponent(p.player_name) + '">' + p.player_name + '</a></td>' +
+            '<td>' + formatPropType(p.prop_type) + '</td>' +
+            '<td>' + p.dk_line + '</td>' +
+            '<td>' + p.projected_value.toFixed(1) + '</td>' +
+            '<td class="' + edgeClass + '">' + edgePct + '%</td>' +
+            '<td>' + (prob * 100).toFixed(1) + '%</td>' +
+            '<td><span class="side-badge side-' + side.toLowerCase() + '">' + side + '</span></td>' +
+            '<td>' + formatOdds(odds) + '</td>' +
+            resultHtml;
+
+        tbody.appendChild(tr);
+    });
+}
+</script>
+{% endblock %}

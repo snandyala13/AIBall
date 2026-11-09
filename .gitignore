@@ -17,6 +17,11 @@ htmlcov/
 # Output
 outputs/
 logs/
+archive/
+data/
+
+# Notes with credentials
+CLAUDE_NOTES.md
 
 # IDE
 .idea/
@@ -28,7 +33,14 @@ logs/
 CLAUDE.md
 SESSION_SUMMARY.md
 
+# Models (binary, use separate storage)
+models/
+catboost_info/
+*.joblib
+*.pkl
+
 # macOS
 .DS_Store
 
-.cache.db
+cache.db
+*.db

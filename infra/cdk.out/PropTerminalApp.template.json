@@ -1,0 +1,2076 @@
+{
+ "Resources": {
+  "PropTerminalClusterB638CAC6": {
+   "Type": "AWS::ECS::Cluster",
+   "Properties": {
+    "ClusterName": "propterminal-cluster",
+    "ClusterSettings": [
+     {
+      "Name": "containerInsights",
+      "Value": "enabled"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/PropTerminalCluster/Resource"
+   }
+  },
+  "WebLogGroup68B8CF3C": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/ecs/propterminal",
+    "RetentionInDays": 30
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebLogGroup/Resource"
+   }
+  },
+  "BatchLogGroupFA0EEAC1": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/ecs/propterminal-batch",
+    "RetentionInDays": 30
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchLogGroup/Resource"
+   }
+  },
+  "WebTaskDefTaskRole73B79392": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebTaskDef/TaskRole/Resource"
+   }
+  },
+  "WebTaskDefTaskRoleDefaultPolicy1CD89E9F": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+       ],
+       "Condition": {
+        "Bool": {
+         "elasticfilesystem:AccessedViaMountTarget": "true"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputFnGetAttAiBallEfs364E4857ArnC2F1B28B"
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputFnGetAttAiBallArtifacts0B3B5F72Arn7A025041"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputFnGetAttAiBallArtifacts0B3B5F72Arn7A025041"
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WebTaskDefTaskRoleDefaultPolicy1CD89E9F",
+    "Roles": [
+     {
+      "Ref": "WebTaskDefTaskRole73B79392"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebTaskDef/TaskRole/DefaultPolicy/Resource"
+   }
+  },
+  "WebTaskDefDC37DBDB": {
+   "Type": "AWS::ECS::TaskDefinition",
+   "Properties": {
+    "ContainerDefinitions": [
+     {
+      "Environment": [
+       {
+        "Name": "APP_MODE",
+        "Value": "web"
+       },
+       {
+        "Name": "EFS_MOUNT",
+        "Value": "/data"
+       },
+       {
+        "Name": "S3_BUCKET",
+        "Value": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallArtifacts0B3B5F72233887FF"
+        }
+       },
+       {
+        "Name": "REDIS_URL",
+        "Value": {
+         "Fn::Join": [
+          "",
+          [
+           "redis://",
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputFnGetAttAiBallRedisRedisEndpointAddress9F628159"
+           },
+           ":",
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputFnGetAttAiBallRedisRedisEndpointPortABC19E91"
+           },
+           "/0"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "AIBALL_MODELS_DIR",
+        "Value": "/data/models/v3_classifier_holdout"
+       }
+      ],
+      "Essential": true,
+      "HealthCheck": {
+       "Command": [
+        "CMD-SHELL",
+        "curl -f http://localhost:8000/health || exit 1"
+       ],
+       "Interval": 10,
+       "Retries": 3,
+       "StartPeriod": 30,
+       "Timeout": 5
+      },
+      "Image": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Ref": "AWS::AccountId"
+         },
+         ".dkr.ecr.",
+         {
+          "Ref": "AWS::Region"
+         },
+         ".",
+         {
+          "Ref": "AWS::URLSuffix"
+         },
+         "/propterminal:latest"
+        ]
+       ]
+      },
+      "LogConfiguration": {
+       "LogDriver": "awslogs",
+       "Options": {
+        "awslogs-group": {
+         "Ref": "WebLogGroup68B8CF3C"
+        },
+        "awslogs-stream-prefix": "web",
+        "awslogs-region": {
+         "Ref": "AWS::Region"
+        }
+       }
+      },
+      "MountPoints": [
+       {
+        "ContainerPath": "/data",
+        "ReadOnly": false,
+        "SourceVolume": "efs-data"
+       }
+      ],
+      "Name": "web",
+      "PortMappings": [
+       {
+        "ContainerPort": 8000,
+        "Protocol": "tcp"
+       }
+      ],
+      "Secrets": [
+       {
+        "Name": "BALLDONTLIE_API_KEY",
+        "ValueFrom": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefBallDontLieApiKeyDB6C50DD84E1CFB5"
+        }
+       },
+       {
+        "Name": "PROPLINE_API_KEY",
+        "ValueFrom": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropLineApiKeyCE8D3FA488B7A52A"
+        }
+       },
+       {
+        "Name": "ODDS_API_KEY",
+        "ValueFrom": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefOddsApiKeyC60B481337C37BA0"
+        }
+       },
+       {
+        "Name": "CTG_EMAIL",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+           },
+           ":email::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "CTG_PASSWORD",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+           },
+           ":password::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "PT_PASSWORD_HASH",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+           },
+           ":password_hash::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "SESSION_SECRET",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+           },
+           ":session_secret::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_HOST",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":host::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_PORT",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":port::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_USERNAME",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":username::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_PASSWORD",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":password::"
+          ]
+         ]
+        }
+       }
+      ]
+     }
+    ],
+    "Cpu": "1024",
+    "ExecutionRoleArn": {
+     "Fn::GetAtt": [
+      "WebTaskDefExecutionRoleA6D04B61",
+      "Arn"
+     ]
+    },
+    "Family": "propterminal-web",
+    "Memory": "2048",
+    "NetworkMode": "awsvpc",
+    "RequiresCompatibilities": [
+     "FARGATE"
+    ],
+    "RuntimePlatform": {
+     "CpuArchitecture": "ARM64",
+     "OperatingSystemFamily": "LINUX"
+    },
+    "TaskRoleArn": {
+     "Fn::GetAtt": [
+      "WebTaskDefTaskRole73B79392",
+      "Arn"
+     ]
+    },
+    "Volumes": [
+     {
+      "EFSVolumeConfiguration": {
+       "AuthorizationConfig": {
+        "AccessPointId": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallEfsDataAccessPoint728F562E60F97B16"
+        },
+        "IAM": "ENABLED"
+       },
+       "FilesystemId": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallEfs364E485792789D7A"
+       },
+       "TransitEncryption": "ENABLED"
+      },
+      "Name": "efs-data"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebTaskDef/Resource"
+   }
+  },
+  "WebTaskDefExecutionRoleA6D04B61": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebTaskDef/ExecutionRole/Resource"
+   }
+  },
+  "WebTaskDefExecutionRoleDefaultPolicyABD5D4E0": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ecr:",
+          {
+           "Ref": "AWS::Region"
+          },
+          ":",
+          {
+           "Ref": "AWS::AccountId"
+          },
+          ":repository/propterminal"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "WebLogGroup68B8CF3C",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefBallDontLieApiKeyDB6C50DD84E1CFB5"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropLineApiKeyCE8D3FA488B7A52A"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefOddsApiKeyC60B481337C37BA0"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "WebTaskDefExecutionRoleDefaultPolicyABD5D4E0",
+    "Roles": [
+     {
+      "Ref": "WebTaskDefExecutionRoleA6D04B61"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebTaskDef/ExecutionRole/DefaultPolicy/Resource"
+   }
+  },
+  "BatchTaskDefTaskRole89B0757E": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/TaskRole/Resource"
+   }
+  },
+  "BatchTaskDefTaskRoleDefaultPolicy15A01FC7": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientWrite",
+        "elasticfilesystem:ClientRootAccess"
+       ],
+       "Condition": {
+        "Bool": {
+         "elasticfilesystem:AccessedViaMountTarget": "true"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputFnGetAttAiBallEfs364E4857ArnC2F1B28B"
+       }
+      },
+      {
+       "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputFnGetAttAiBallArtifacts0B3B5F72Arn7A025041"
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputFnGetAttAiBallArtifacts0B3B5F72Arn7A025041"
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "BatchTaskDefTaskRoleDefaultPolicy15A01FC7",
+    "Roles": [
+     {
+      "Ref": "BatchTaskDefTaskRole89B0757E"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/TaskRole/DefaultPolicy/Resource"
+   }
+  },
+  "BatchTaskDef5F2CFDD9": {
+   "Type": "AWS::ECS::TaskDefinition",
+   "Properties": {
+    "ContainerDefinitions": [
+     {
+      "Environment": [
+       {
+        "Name": "APP_MODE",
+        "Value": "batch"
+       },
+       {
+        "Name": "EFS_MOUNT",
+        "Value": "/data"
+       },
+       {
+        "Name": "S3_BUCKET",
+        "Value": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallArtifacts0B3B5F72233887FF"
+        }
+       },
+       {
+        "Name": "REDIS_URL",
+        "Value": {
+         "Fn::Join": [
+          "",
+          [
+           "redis://",
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputFnGetAttAiBallRedisRedisEndpointAddress9F628159"
+           },
+           ":",
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputFnGetAttAiBallRedisRedisEndpointPortABC19E91"
+           },
+           "/0"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "AIBALL_MODELS_DIR",
+        "Value": "/data/models/v3_classifier_holdout"
+       }
+      ],
+      "Essential": true,
+      "Image": {
+       "Fn::Join": [
+        "",
+        [
+         {
+          "Ref": "AWS::AccountId"
+         },
+         ".dkr.ecr.",
+         {
+          "Ref": "AWS::Region"
+         },
+         ".",
+         {
+          "Ref": "AWS::URLSuffix"
+         },
+         "/propterminal:latest"
+        ]
+       ]
+      },
+      "LogConfiguration": {
+       "LogDriver": "awslogs",
+       "Options": {
+        "awslogs-group": {
+         "Ref": "BatchLogGroupFA0EEAC1"
+        },
+        "awslogs-stream-prefix": "batch",
+        "awslogs-region": {
+         "Ref": "AWS::Region"
+        }
+       }
+      },
+      "MountPoints": [
+       {
+        "ContainerPath": "/data",
+        "ReadOnly": false,
+        "SourceVolume": "efs-data"
+       }
+      ],
+      "Name": "batch",
+      "Secrets": [
+       {
+        "Name": "BALLDONTLIE_API_KEY",
+        "ValueFrom": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefBallDontLieApiKeyDB6C50DD84E1CFB5"
+        }
+       },
+       {
+        "Name": "PROPLINE_API_KEY",
+        "ValueFrom": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropLineApiKeyCE8D3FA488B7A52A"
+        }
+       },
+       {
+        "Name": "ODDS_API_KEY",
+        "ValueFrom": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefOddsApiKeyC60B481337C37BA0"
+        }
+       },
+       {
+        "Name": "CTG_EMAIL",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+           },
+           ":email::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "CTG_PASSWORD",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+           },
+           ":password::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "PT_PASSWORD_HASH",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+           },
+           ":password_hash::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "SESSION_SECRET",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+           },
+           ":session_secret::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_HOST",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":host::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_PORT",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":port::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_USERNAME",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":username::"
+          ]
+         ]
+        }
+       },
+       {
+        "Name": "DB_PASSWORD",
+        "ValueFrom": {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+           },
+           ":password::"
+          ]
+         ]
+        }
+       }
+      ]
+     }
+    ],
+    "Cpu": "512",
+    "ExecutionRoleArn": {
+     "Fn::GetAtt": [
+      "BatchTaskDefExecutionRoleB38D5A12",
+      "Arn"
+     ]
+    },
+    "Family": "propterminal-batch",
+    "Memory": "1024",
+    "NetworkMode": "awsvpc",
+    "RequiresCompatibilities": [
+     "FARGATE"
+    ],
+    "RuntimePlatform": {
+     "CpuArchitecture": "ARM64",
+     "OperatingSystemFamily": "LINUX"
+    },
+    "TaskRoleArn": {
+     "Fn::GetAtt": [
+      "BatchTaskDefTaskRole89B0757E",
+      "Arn"
+     ]
+    },
+    "Volumes": [
+     {
+      "EFSVolumeConfiguration": {
+       "AuthorizationConfig": {
+        "AccessPointId": {
+         "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallEfsDataAccessPoint728F562E60F97B16"
+        },
+        "IAM": "ENABLED"
+       },
+       "FilesystemId": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallEfs364E485792789D7A"
+       },
+       "TransitEncryption": "ENABLED"
+      },
+      "Name": "efs-data"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/Resource"
+   }
+  },
+  "BatchTaskDefExecutionRoleB38D5A12": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/ExecutionRole/Resource"
+   }
+  },
+  "BatchTaskDefExecutionRoleDefaultPolicyC83D8A2A": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ecr:",
+          {
+           "Ref": "AWS::Region"
+          },
+          ":",
+          {
+           "Ref": "AWS::AccountId"
+          },
+          ":repository/propterminal"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "ecr:GetAuthorizationToken",
+       "Effect": "Allow",
+       "Resource": "*"
+      },
+      {
+       "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "BatchLogGroupFA0EEAC1",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefBallDontLieApiKeyDB6C50DD84E1CFB5"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropLineApiKeyCE8D3FA488B7A52A"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefOddsApiKeyC60B481337C37BA0"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefCtgCredentials466CBCB559499983"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefPropTerminalAuth57846FAFCA6857E2"
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "BatchTaskDefExecutionRoleDefaultPolicyC83D8A2A",
+    "Roles": [
+     {
+      "Ref": "BatchTaskDefExecutionRoleB38D5A12"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/ExecutionRole/DefaultPolicy/Resource"
+   }
+  },
+  "BatchTaskDefEventsRoleF0E5D8F0": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "events.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/EventsRole/Resource"
+   }
+  },
+  "BatchTaskDefEventsRoleDefaultPolicy22930F4D": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "ecs:RunTask",
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": {
+          "Fn::GetAtt": [
+           "PropTerminalClusterB638CAC6",
+           "Arn"
+          ]
+         }
+        }
+       },
+       "Effect": "Allow",
+       "Resource": {
+        "Ref": "BatchTaskDef5F2CFDD9"
+       }
+      },
+      {
+       "Action": "ecs:TagResource",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":ecs:",
+          {
+           "Ref": "AWS::Region"
+          },
+          ":*:task/",
+          {
+           "Ref": "PropTerminalClusterB638CAC6"
+          },
+          "/*"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": "iam:PassRole",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "BatchTaskDefExecutionRoleB38D5A12",
+         "Arn"
+        ]
+       }
+      },
+      {
+       "Action": "iam:PassRole",
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::GetAtt": [
+         "BatchTaskDefTaskRole89B0757E",
+         "Arn"
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "BatchTaskDefEventsRoleDefaultPolicy22930F4D",
+    "Roles": [
+     {
+      "Ref": "BatchTaskDefEventsRoleF0E5D8F0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/BatchTaskDef/EventsRole/DefaultPolicy/Resource"
+   }
+  },
+  "WebService7F8A1763": {
+   "Type": "AWS::ECS::Service",
+   "Properties": {
+    "Cluster": {
+     "Ref": "PropTerminalClusterB638CAC6"
+    },
+    "DeploymentConfiguration": {
+     "Alarms": {
+      "AlarmNames": [],
+      "Enable": false,
+      "Rollback": false
+     },
+     "MaximumPercent": 200,
+     "MinimumHealthyPercent": 50
+    },
+    "DesiredCount": 1,
+    "EnableECSManagedTags": false,
+    "HealthCheckGracePeriodSeconds": 60,
+    "LaunchType": "FARGATE",
+    "LoadBalancers": [
+     {
+      "ContainerName": "web",
+      "ContainerPort": 8000,
+      "TargetGroupArn": {
+       "Ref": "WebTargetGroup12079923"
+      }
+     }
+    ],
+    "NetworkConfiguration": {
+     "AwsvpcConfiguration": {
+      "AssignPublicIp": "DISABLED",
+      "SecurityGroups": [
+       {
+        "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttFargateSg4CA74029GroupId34D43193"
+       }
+      ],
+      "Subnets": [
+       {
+        "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet1SubnetFF3E80CFB34CDEB1"
+       },
+       {
+        "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet2Subnet657A54A6752952DE"
+       }
+      ]
+     }
+    },
+    "ServiceName": "propterminal-web",
+    "TaskDefinition": {
+     "Ref": "WebTaskDefDC37DBDB"
+    }
+   },
+   "DependsOn": [
+    "PropTerminalAlbHttpListener28539911",
+    "WebTaskDefTaskRoleDefaultPolicy1CD89E9F",
+    "WebTaskDefTaskRole73B79392"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebService/Service"
+   }
+  },
+  "WebServiceTaskCountTarget578D9A62": {
+   "Type": "AWS::ApplicationAutoScaling::ScalableTarget",
+   "Properties": {
+    "MaxCapacity": 1,
+    "MinCapacity": 0,
+    "ResourceId": {
+     "Fn::Join": [
+      "",
+      [
+       "service/",
+       {
+        "Ref": "PropTerminalClusterB638CAC6"
+       },
+       "/",
+       {
+        "Fn::GetAtt": [
+         "WebService7F8A1763",
+         "Name"
+        ]
+       }
+      ]
+     ]
+    },
+    "RoleARN": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":iam::",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService"
+      ]
+     ]
+    },
+    "ScalableDimension": "ecs:service:DesiredCount",
+    "ScheduledActions": [
+     {
+      "ScalableTargetAction": {
+       "MaxCapacity": 1,
+       "MinCapacity": 1
+      },
+      "Schedule": "cron(0 16 * * ? *)",
+      "ScheduledActionName": "ScaleUp"
+     },
+     {
+      "ScalableTargetAction": {
+       "MaxCapacity": 0,
+       "MinCapacity": 0
+      },
+      "Schedule": "cron(0 8 * * ? *)",
+      "ScheduledActionName": "ScaleDown"
+     }
+    ],
+    "ServiceNamespace": "ecs"
+   },
+   "DependsOn": [
+    "WebTaskDefTaskRoleDefaultPolicy1CD89E9F",
+    "WebTaskDefTaskRole73B79392"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebService/TaskCount/Target/Resource"
+   }
+  },
+  "PropTerminalAlbDF512DA3": {
+   "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+   "Properties": {
+    "LoadBalancerAttributes": [
+     {
+      "Key": "deletion_protection.enabled",
+      "Value": "false"
+     }
+    ],
+    "Scheme": "internet-facing",
+    "SecurityGroups": [
+     {
+      "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttAlbSg1155C1BEGroupIdF2A72E65"
+     }
+    ],
+    "Subnets": [
+     {
+      "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPublicSubnet1Subnet220FA55C82B8B6C5"
+     },
+     {
+      "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPublicSubnet2Subnet4FE224D7545A29BC"
+     }
+    ],
+    "Type": "application"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/PropTerminalAlb/Resource"
+   }
+  },
+  "PropTerminalAlbHttpListener28539911": {
+   "Type": "AWS::ElasticLoadBalancingV2::Listener",
+   "Properties": {
+    "DefaultActions": [
+     {
+      "TargetGroupArn": {
+       "Ref": "WebTargetGroup12079923"
+      },
+      "Type": "forward"
+     }
+    ],
+    "LoadBalancerArn": {
+     "Ref": "PropTerminalAlbDF512DA3"
+    },
+    "Port": 80,
+    "Protocol": "HTTP"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/PropTerminalAlb/HttpListener/Resource"
+   }
+  },
+  "WebTargetGroup12079923": {
+   "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+   "Properties": {
+    "HealthCheckIntervalSeconds": 30,
+    "HealthCheckPath": "/health",
+    "HealthCheckTimeoutSeconds": 5,
+    "HealthyThresholdCount": 2,
+    "Port": 8000,
+    "Protocol": "HTTP",
+    "TargetGroupAttributes": [
+     {
+      "Key": "stickiness.enabled",
+      "Value": "false"
+     }
+    ],
+    "TargetType": "ip",
+    "UnhealthyThresholdCount": 3,
+    "VpcId": {
+     "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcDC403AB7B73ADCBF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebTargetGroup/Resource"
+   }
+  },
+  "PreGameAnalyze55378D56": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "propterminal-pre-game-analyze",
+    "ScheduleExpression": "cron(0 20 * * ? *)",
+    "State": "ENABLED",
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "PropTerminalClusterB638CAC6",
+        "Arn"
+       ]
+      },
+      "EcsParameters": {
+       "LaunchType": "FARGATE",
+       "NetworkConfiguration": {
+        "AwsVpcConfiguration": {
+         "AssignPublicIp": "DISABLED",
+         "SecurityGroups": [
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttFargateSg4CA74029GroupId34D43193"
+          }
+         ],
+         "Subnets": [
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet1SubnetFF3E80CFB34CDEB1"
+          },
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet2Subnet657A54A6752952DE"
+          }
+         ]
+        }
+       },
+       "TaskCount": 1,
+       "TaskDefinitionArn": {
+        "Ref": "BatchTaskDef5F2CFDD9"
+       }
+      },
+      "Id": "Target0",
+      "Input": "{\"containerOverrides\":[{\"name\":\"batch\",\"command\":[\"analyze-all\"]}]}",
+      "RoleArn": {
+       "Fn::GetAtt": [
+        "BatchTaskDefEventsRoleF0E5D8F0",
+        "Arn"
+       ]
+      }
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/PreGameAnalyze/Resource"
+   }
+  },
+  "GradePredictions0D79F9D2": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "propterminal-grade-predictions",
+    "ScheduleExpression": "cron(0 7 * * ? *)",
+    "State": "ENABLED",
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "PropTerminalClusterB638CAC6",
+        "Arn"
+       ]
+      },
+      "EcsParameters": {
+       "LaunchType": "FARGATE",
+       "NetworkConfiguration": {
+        "AwsVpcConfiguration": {
+         "AssignPublicIp": "DISABLED",
+         "SecurityGroups": [
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttFargateSg4CA74029GroupId34D43193"
+          }
+         ],
+         "Subnets": [
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet1SubnetFF3E80CFB34CDEB1"
+          },
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet2Subnet657A54A6752952DE"
+          }
+         ]
+        }
+       },
+       "TaskCount": 1,
+       "TaskDefinitionArn": {
+        "Ref": "BatchTaskDef5F2CFDD9"
+       }
+      },
+      "Id": "Target0",
+      "Input": "{\"containerOverrides\":[{\"name\":\"batch\",\"command\":[\"grade\"]}]}",
+      "RoleArn": {
+       "Fn::GetAtt": [
+        "BatchTaskDefEventsRoleF0E5D8F0",
+        "Arn"
+       ]
+      }
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/GradePredictions/Resource"
+   }
+  },
+  "RetrainMonthlyC26F92BC": {
+   "Type": "AWS::Events::Rule",
+   "Properties": {
+    "Name": "propterminal-retrain-monthly",
+    "ScheduleExpression": "cron(0 14 1 * ? *)",
+    "State": "ENABLED",
+    "Targets": [
+     {
+      "Arn": {
+       "Fn::GetAtt": [
+        "PropTerminalClusterB638CAC6",
+        "Arn"
+       ]
+      },
+      "EcsParameters": {
+       "LaunchType": "FARGATE",
+       "NetworkConfiguration": {
+        "AwsVpcConfiguration": {
+         "AssignPublicIp": "DISABLED",
+         "SecurityGroups": [
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputFnGetAttFargateSg4CA74029GroupId34D43193"
+          }
+         ],
+         "Subnets": [
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet1SubnetFF3E80CFB34CDEB1"
+          },
+          {
+           "Fn::ImportValue": "PropTerminalNetwork:ExportsOutputRefAiBallVpcPrivateSubnet2Subnet657A54A6752952DE"
+          }
+         ]
+        }
+       },
+       "TaskCount": 1,
+       "TaskDefinitionArn": {
+        "Ref": "BatchTaskDef5F2CFDD9"
+       }
+      },
+      "Id": "Target0",
+      "Input": "{\"containerOverrides\":[{\"name\":\"batch\",\"command\":[\"retrain\"]}]}",
+      "RoleArn": {
+       "Fn::GetAtt": [
+        "BatchTaskDefEventsRoleF0E5D8F0",
+        "Arn"
+       ]
+      }
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/RetrainMonthly/Resource"
+   }
+  },
+  "AlertsTopic3414BE91": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "TopicName": "propterminal-alerts"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/AlertsTopic/Resource"
+   }
+  },
+  "OpsDashboardCE408D93": {
+   "Type": "AWS::CloudWatch::Dashboard",
+   "Properties": {
+    "DashboardBody": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"widgets\":[{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":0,\"y\":0,\"properties\":{\"view\":\"timeSeries\",\"title\":\"ECS CPU Utilization\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/ECS\",\"CPUUtilization\",\"ClusterName\",\"",
+       {
+        "Ref": "PropTerminalClusterB638CAC6"
+       },
+       "\",\"ServiceName\",\"",
+       {
+        "Fn::GetAtt": [
+         "WebService7F8A1763",
+         "Name"
+        ]
+       },
+       "\"]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":12,\"height\":6,\"x\":12,\"y\":0,\"properties\":{\"view\":\"timeSeries\",\"title\":\"ECS Memory Utilization\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/ECS\",\"MemoryUtilization\",\"ClusterName\",\"",
+       {
+        "Ref": "PropTerminalClusterB638CAC6"
+       },
+       "\",\"ServiceName\",\"",
+       {
+        "Fn::GetAtt": [
+         "WebService7F8A1763",
+         "Name"
+        ]
+       },
+       "\"]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":0,\"y\":6,\"properties\":{\"view\":\"timeSeries\",\"title\":\"ALB Request Count\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/ApplicationELB\",\"RequestCount\",\"LoadBalancer\",\"",
+       {
+        "Fn::GetAtt": [
+         "PropTerminalAlbDF512DA3",
+         "LoadBalancerFullName"
+        ]
+       },
+       "\",{\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":8,\"y\":6,\"properties\":{\"view\":\"timeSeries\",\"title\":\"ALB Response Time (P50 / P99)\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/ApplicationELB\",\"TargetResponseTime\",\"LoadBalancer\",\"",
+       {
+        "Fn::GetAtt": [
+         "PropTerminalAlbDF512DA3",
+         "LoadBalancerFullName"
+        ]
+       },
+       "\",{\"stat\":\"p50\"}],[\"AWS/ApplicationELB\",\"TargetResponseTime\",\"LoadBalancer\",\"",
+       {
+        "Fn::GetAtt": [
+         "PropTerminalAlbDF512DA3",
+         "LoadBalancerFullName"
+        ]
+       },
+       "\",{\"stat\":\"p99\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":8,\"height\":6,\"x\":16,\"y\":6,\"properties\":{\"view\":\"timeSeries\",\"title\":\"ALB 5xx Errors\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/ApplicationELB\",\"HTTPCode_ELB_5XX_Count\",\"LoadBalancer\",\"",
+       {
+        "Fn::GetAtt": [
+         "PropTerminalAlbDF512DA3",
+         "LoadBalancerFullName"
+        ]
+       },
+       "\",{\"stat\":\"Sum\"}]],\"yAxis\":{}}}]}"
+      ]
+     ]
+    },
+    "DashboardName": "propterminal-ops"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/OpsDashboard/Resource"
+   }
+  },
+  "WebUnhealthy052B77ED": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlertsTopic3414BE91"
+     }
+    ],
+    "AlarmDescription": "ALB has unhealthy hosts for 5+ minutes",
+    "AlarmName": "WebUnhealthy",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "DatapointsToAlarm": 5,
+    "Dimensions": [
+     {
+      "Name": "LoadBalancer",
+      "Value": {
+       "Fn::GetAtt": [
+        "PropTerminalAlbDF512DA3",
+        "LoadBalancerFullName"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 5,
+    "MetricName": "UnHealthyHostCount",
+    "Namespace": "AWS/ApplicationELB",
+    "Period": 60,
+    "Statistic": "Maximum",
+    "Threshold": 0,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/WebUnhealthy/Resource"
+   }
+  },
+  "High5xx593194FE": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlertsTopic3414BE91"
+     }
+    ],
+    "AlarmDescription": "ALB returned more than 5 5xx errors in 5 minutes",
+    "AlarmName": "High5xx",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "DatapointsToAlarm": 1,
+    "Dimensions": [
+     {
+      "Name": "LoadBalancer",
+      "Value": {
+       "Fn::GetAtt": [
+        "PropTerminalAlbDF512DA3",
+        "LoadBalancerFullName"
+       ]
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "HTTPCode_ELB_5XX_Count",
+    "Namespace": "AWS/ApplicationELB",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Threshold": 5,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/High5xx/Resource"
+   }
+  },
+  "GradingMissed9C4AD4FC": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlertsTopic3414BE91"
+     }
+    ],
+    "AlarmDescription": "Grading task did not complete in the last 24 hours. Publish PropTerminal/GradingCompleted metric from the grade command.",
+    "AlarmName": "GradingMissed",
+    "ComparisonOperator": "LessThanThreshold",
+    "DatapointsToAlarm": 1,
+    "EvaluationPeriods": 1,
+    "MetricName": "GradingCompleted",
+    "Namespace": "PropTerminal",
+    "Period": 86400,
+    "Statistic": "Sum",
+    "Threshold": 1,
+    "TreatMissingData": "breaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/GradingMissed/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/11RyW7CMBD9Fu7Graio1COL2gtSUeBeDY4JU4wn8gJCkf+944RA6GnevDf7TORkOpWvI7j4sSqPY4M72WwCqKNg6qfRyslC1+QxkLvOwWuhlZfNwkQftBOLve3hJ7gKgt6CPy71Hi0GJJsD/jNkA6DVbsDdcjfanVHpnNTDjQIDO9OWXVC0IQlDFU+wourLUaxzcI+TQDjJpiDT1mjtmgyqa3Y7lATUNQPIjSEG8twBbcVr31u5Sod2iCcmCW3AB1SGoNyxYhXnnSeymT0qrlibt1p3nSd/GId8NHuL6fFA71reNxy4PMZZ28AnKOJtT7ZJeMvUlmpUbUIGSfCssbxAUAfZLMEfdgSuzPrDmRlwp0y1ICVRaE/RdW/4jqGOvPn6Gg5kX97kh3wf/XrEseNf4EnLorN/iQaO+UkCAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "PropTerminalApp/CDKMetadata/Default"
+   },
+   "Condition": "CDKMetadataAvailable"
+  }
+ },
+ "Outputs": {
+  "AlbDnsName": {
+   "Value": {
+    "Fn::GetAtt": [
+     "PropTerminalAlbDF512DA3",
+     "DNSName"
+    ]
+   }
+  },
+  "EcrRepositoryUri": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      {
+       "Ref": "AWS::AccountId"
+      },
+      ".dkr.ecr.",
+      {
+       "Ref": "AWS::Region"
+      },
+      ".",
+      {
+       "Ref": "AWS::URLSuffix"
+      },
+      "/propterminal"
+     ]
+    ]
+   }
+  },
+  "EcsClusterName": {
+   "Value": {
+    "Ref": "PropTerminalClusterB638CAC6"
+   }
+  },
+  "S3BucketName": {
+   "Value": {
+    "Fn::ImportValue": "PropTerminalStorage:ExportsOutputRefAiBallArtifacts0B3B5F72233887FF"
+   }
+  },
+  "DbSecretArn": {
+   "Value": {
+    "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputRefAiBallDbSecretAttachmentB96429F955892AB7"
+   }
+  },
+  "RedisUrl": {
+   "Value": {
+    "Fn::Join": [
+     "",
+     [
+      "redis://",
+      {
+       "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputFnGetAttAiBallRedisRedisEndpointAddress9F628159"
+      },
+      ":",
+      {
+       "Fn::ImportValue": "PropTerminalDatabase:ExportsOutputFnGetAttAiBallRedisRedisEndpointPortABC19E91"
+      },
+      "/0"
+     ]
+    ]
+   }
+  }
+ },
+ "Conditions": {
+  "CDKMetadataAvailable": {
+   "Fn::Or": [
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "af-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-northeast-3"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-south-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-3"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ap-southeast-4"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ca-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "ca-west-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "cn-north-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "cn-northwest-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-central-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-north-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-south-2"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Or": [
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "eu-west-3"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "il-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "me-central-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "me-south-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "sa-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-east-1"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-east-2"
+       ]
+      },
+      {
+       "Fn::Equals": [
+        {
+         "Ref": "AWS::Region"
+        },
+        "us-west-1"
+       ]
+      }
+     ]
+    },
+    {
+     "Fn::Equals": [
+      {
+       "Ref": "AWS::Region"
+      },
+      "us-west-2"
+     ]
+    }
+   ]
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
