@@ -2559,7 +2559,7 @@ class AnalysisEngine:
 
             # Strategy P tag: edge 5-15%, confidence >= 0.55
             edge_abs = abs(pred["edge_percent"])
-            pred["strategy_p"] = (
+            pred["strategy_p"] = bool(
                 5.0 <= edge_abs <= 15.0
                 and pred.get("confidence", 0) >= 0.55
                 and ptype in {"threes", "points", "pts_rebs_asts", "steals",

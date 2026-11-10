@@ -15,6 +15,7 @@ Routes:
 """
 
 import hashlib
+import json
 import os
 import sys
 import asyncio
@@ -22,11 +23,30 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+import numpy as np
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse as _OrigJSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+
+
+class _NumpySafeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+class JSONResponse(_OrigJSONResponse):
+    def render(self, content):
+        return json.dumps(content, cls=_NumpySafeEncoder).encode("utf-8")
 
 # Add parent directory to path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
