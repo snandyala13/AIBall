@@ -417,6 +417,12 @@ function renderV2CompactBet(pred) {
         filterOpacity = ' style="opacity:0.5"';
     }
 
+    // Strategy P badge (backtest-validated filter)
+    var strategyBadgeHtml = '';
+    if (pred.strategy_p) {
+        strategyBadgeHtml = ' <span class="filter-badge filter-strong" title="Strategy P: edge 5-15%, confidence ≥55% — backtest-validated +5.4% ROI">STRATEGY P</span>';
+    }
+
     // Cross-book signal badge
     var signalHtml = '';
     var crossSignal = pred.cross_book_signal || 'NEUTRAL';
@@ -571,7 +577,7 @@ function renderV2CompactBet(pred) {
         '<div class="compact-bet-info">' +
             '<span class="compact-bet-player">' +
                 '<a href="/player/' + encodeURIComponent(pred.player) + '">' + pred.player + '</a>' +
-                signalHtml + arbHtml + middleHtml + softBookBadge + starUnderBadge + wideSpreadBadge + shopItBadge + filterBadgeHtml + staleBadgeHtml + cascadeBadgeHtml +
+                strategyBadgeHtml + signalHtml + arbHtml + middleHtml + softBookBadge + starUnderBadge + wideSpreadBadge + shopItBadge + filterBadgeHtml + staleBadgeHtml + cascadeBadgeHtml +
             '</span>' +
             '<span class="compact-bet-prop">' +
                 '<span class="side-badge ' + sideClass + '">' + pred.side.toUpperCase() + '</span> ' +
@@ -1259,9 +1265,14 @@ function renderHeroPicks() {
         }
         return true;
     });
+
+    // Strategy P first: split into validated picks and the rest
+    var stratPicks = unique.filter(function(p) { return p.strategy_p; });
+    var otherPicks = unique.filter(function(p) { return !p.strategy_p; });
+
     // Balanced ranking: interleave across prop types instead of pure edge sort
     var byProp = {};
-    unique.forEach(function(p) {
+    stratPicks.forEach(function(p) {
         var pt = p.prop_type || '';
         if (!byProp[pt]) byProp[pt] = [];
         byProp[pt].push(p);
@@ -1293,11 +1304,14 @@ function renderHeroPicks() {
             byProp[pt].forEach(function(p) { balanced.push(p); });
         }
     });
+    // Append non-Strategy-P picks after the validated ones
+    balanced = balanced.concat(otherPicks);
     var top = balanced.slice(0, 50);
 
+    var stratCount = stratPicks.length;
     var subtitle = document.getElementById('hero-picks-subtitle');
     if (subtitle) {
-        subtitle.textContent = 'Top ' + top.length + ' balanced picks \u2022 updates every 30s';
+        subtitle.textContent = (stratCount > 0 ? stratCount + ' Strategy P picks' : 'Top ' + top.length + ' picks') + ' \u2022 updates every 30s';
     }
 
     var html = '';

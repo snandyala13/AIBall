@@ -92,6 +92,26 @@ class PropLineClient:
         # type: (str, object) -> None
         self._cache[key] = (time.time(), data)
 
+    @staticmethod
+    def _date_matches(commence_time, date_str):
+        # type: (str, str) -> bool
+        """Check if a UTC commence_time belongs to the local date.
+
+        Games at e.g. 7pm ET have UTC timestamps on the next calendar day.
+        We accept both the local date and the next day in UTC.
+        """
+        if not commence_time or not date_str:
+            return False
+        utc_date = commence_time[:10]
+        if utc_date == date_str:
+            return True
+        try:
+            local = datetime.strptime(date_str, "%Y-%m-%d")
+            next_day = (local + timedelta(days=1)).strftime("%Y-%m-%d")
+            return utc_date == next_day
+        except ValueError:
+            return False
+
     # ------------------------------------------------------------------
     # Events
     # ------------------------------------------------------------------
@@ -116,16 +136,13 @@ class PropLineClient:
         if data is None:
             return []
 
-        # PropLine may return events across multiple days; filter to target date
         if date_str is None:
             date_str = datetime.now().strftime("%Y-%m-%d")
 
         events = []
         for event in data:
             commence = event.get("commence_time", "")
-            # commence_time is ISO 8601, e.g. "2026-10-20T23:00:00Z"
-            event_date = commence[:10] if commence else ""
-            if event_date == date_str:
+            if self._date_matches(commence, date_str):
                 events.append(event)
 
         self._set_cached(cache_key, events)
@@ -169,8 +186,7 @@ class PropLineClient:
 
         for event in data:
             commence = event.get("commence_time", "")
-            event_date = commence[:10] if commence else ""
-            if event_date != date_str:
+            if not self._date_matches(commence, date_str):
                 continue
 
             event_id = str(event.get("id", ""))
@@ -213,8 +229,7 @@ class PropLineClient:
 
         for event in data:
             commence = event.get("commence_time", "")
-            event_date = commence[:10] if commence else ""
-            if event_date != date_str:
+            if not self._date_matches(commence, date_str):
                 continue
 
             event_id = str(event.get("id", ""))

@@ -30,6 +30,34 @@ except ImportError:
 from web.clv_tracker import get_clv_tracker
 from consensus_engine import ConsensusEngine as _ConsensusEngine, SOFT_BOOKS
 
+# v8 calibrated classifier (primary model)
+try:
+    from v2.v8_predictor import V8Predictor
+    V8_AVAILABLE = True
+except ImportError:
+    V8_AVAILABLE = False
+
+# Portfolio management
+try:
+    from portfolio_manager import PortfolioManager
+    PORTFOLIO_AVAILABLE = True
+except ImportError:
+    PORTFOLIO_AVAILABLE = False
+
+# Push alerts
+try:
+    from push_alerts import get_alert_manager
+    ALERTS_AVAILABLE = True
+except ImportError:
+    ALERTS_AVAILABLE = False
+
+# Account health monitoring
+try:
+    from account_health import AccountHealthMonitor
+    ACCOUNT_HEALTH_AVAILABLE = True
+except ImportError:
+    ACCOUNT_HEALTH_AVAILABLE = False
+
 # v2 ML engine (line-anchor LightGBM models)
 try:
     from v2.engine import V2AnalysisEngine
@@ -187,6 +215,48 @@ class AnalysisEngine:
         # Consensus engine for sharp-weighted devigged probabilities
         self.consensus = _ConsensusEngine()
         logger.info("ConsensusEngine initialized for live consensus analysis")
+
+        # v8 calibrated classifier (replaces v7 regression with classification + consensus blend)
+        self.v8_predictor = None
+        self.use_v8 = False
+        if V8_AVAILABLE:
+            try:
+                self.v8_predictor = V8Predictor()
+                self.use_v8 = self.v8_predictor.is_ready()
+                if self.use_v8:
+                    logger.info("V8 calibrated classifier loaded — consensus-blended predictions active")
+                else:
+                    logger.info("V8 predictor initialized but no models found — using v2 fallback")
+            except Exception as e:
+                logger.warning("V8 predictor init failed: %s — using v2 fallback", e)
+
+        # Portfolio exposure manager
+        self.portfolio = None
+        if PORTFOLIO_AVAILABLE:
+            try:
+                bankroll = float(os.getenv("AIBALL_BANKROLL", "1000"))
+                self.portfolio = PortfolioManager(bankroll=bankroll)
+                logger.info("PortfolioManager initialized (bankroll=$%.0f)", bankroll)
+            except Exception as e:
+                logger.warning("PortfolioManager init failed: %s", e)
+
+        # Push alert manager
+        self.alert_manager = None
+        if ALERTS_AVAILABLE:
+            try:
+                self.alert_manager = get_alert_manager()
+                logger.info("PushAlertManager initialized")
+            except Exception as e:
+                logger.warning("PushAlertManager init failed: %s", e)
+
+        # Account health monitor
+        self.account_health = None
+        if ACCOUNT_HEALTH_AVAILABLE:
+            try:
+                self.account_health = AccountHealthMonitor()
+                logger.info("AccountHealthMonitor initialized")
+            except Exception as e:
+                logger.warning("AccountHealthMonitor init failed: %s", e)
 
         # Track which games have had closing lines captured
         self._closing_lines_captured = set()  # type: set
@@ -1297,6 +1367,56 @@ class AnalysisEngine:
             # Log to CLV tracker: snapshots + recommendations
             self._log_clv_data(game_id, formatted, game_date, best_lines)
 
+        # Enrich with v8 calibrated classifier predictions
+        if self.use_v8 and self.v8_predictor:
+            self.v8_predictor.ensure_data_loaded()
+            v8_count = 0
+            for pred in formatted:
+                pname = pred.get("player", "")
+                ptype = pred.get("prop_type", "")
+                line = pred.get("line", 0)
+                over_odds = pred.get("over_odds", -110)
+                under_odds = pred.get("under_odds", -110)
+                all_books = pred.get("all_books", {})
+                if not pname or not ptype or not line:
+                    continue
+                try:
+                    v8_result = self.v8_predictor.predict(
+                        pname, ptype, game_date,
+                        {"line": line, "over_odds": over_odds,
+                         "under_odds": under_odds, "all_books": all_books}
+                    )
+                    if v8_result:
+                        pred["v8_p_over"] = v8_result["p_over"]
+                        pred["v8_p_under"] = v8_result["p_under"]
+                        pred["v8_model_prob"] = v8_result["model_prob"]
+                        pred["v8_consensus_prob"] = v8_result["consensus_prob"]
+                        pred["v8_blended_prob"] = v8_result["blended_prob"]
+                        pred["v8_edge"] = v8_result["edge"]
+                        pred["v8_side"] = v8_result["side"]
+                        pred["v8_kelly"] = v8_result["kelly_fraction"]
+                        pred["v8_recommended_bet_pct"] = v8_result["recommended_bet_pct"]
+                        pred["v8_confidence"] = v8_result["confidence"]
+                        # Override main edge/confidence with v8 values for ranking
+                        pred["edge_percent"] = round(v8_result["edge"] * 100, 1)
+                        pred["confidence"] = v8_result["confidence"]
+                        pred["side"] = v8_result["side"]
+                        v8_count += 1
+                except Exception as e:
+                    logger.debug("v8 prediction failed for %s %s: %s", pname, ptype, e)
+            if v8_count:
+                logger.info("V8 enriched %d/%d predictions with calibrated probabilities",
+                           v8_count, len(formatted))
+
+        # Send push alerts if configured
+        if self.alert_manager and formatted:
+            try:
+                alerts = self.alert_manager.check_and_alert(formatted)
+                if alerts:
+                    logger.info("Sent %d edge alerts", len(alerts))
+            except Exception as e:
+                logger.debug("Push alert error: %s", e)
+
         # Tag predictions with empirical filter tier
         if self.pick_filter:
             for pred in formatted:
@@ -1760,12 +1880,12 @@ class AnalysisEngine:
         return middles
 
     @staticmethod
-    def _compute_pick_score(pred):
-        # type: (dict) -> float
+    def _compute_pick_score(pred, portfolio=None):
+        # type: (dict, object) -> float
         """Composite score incorporating backtest research findings.
 
         Weights: base edge + soft book bonus + star UNDER bonus +
-        odds spread bonus + consensus agreement bonus.
+        odds spread bonus + consensus agreement bonus - portfolio exposure penalty.
         """
         base_edge = abs(pred.get("edge_percent", 0))
 
@@ -1788,26 +1908,75 @@ class AnalysisEngine:
             consensus_agrees = True
         consensus_bonus = 1.0 if consensus_agrees else 0
 
-        return base_edge + soft_bonus + star_bonus + spread_bonus + consensus_bonus
+        # v8 calibrated probability bonus: if v8 blended prob is strong, boost
+        v8_bonus = 0.0
+        v8_conf = pred.get("v8_confidence", 0)
+        if v8_conf >= 0.58:
+            v8_bonus = 1.5
+        elif v8_conf >= 0.55:
+            v8_bonus = 0.75
+
+        # Portfolio exposure penalty: reduce score if overexposed to player/team
+        exposure_penalty = 0.0
+        if portfolio:
+            try:
+                player = pred.get("player", "")
+                team = pred.get("team", "")
+                bankroll = portfolio.bankroll or 1000
+                if player:
+                    player_pct = portfolio._player_exposure(player) / bankroll * 100
+                    if player_pct > 2.0:
+                        exposure_penalty += min((player_pct - 2.0) * 1.5, 3.0)
+                if team:
+                    team_pct = portfolio._team_exposure(team) / bankroll * 100
+                    if team_pct > 5.0:
+                        exposure_penalty += min((team_pct - 5.0) * 0.5, 2.0)
+            except Exception:
+                pass
+
+        return (base_edge + soft_bonus + star_bonus + spread_bonus
+                + consensus_bonus + v8_bonus - exposure_penalty)
 
     @staticmethod
     def _apply_balanced_ranking(predictions):
         # type: (list) -> list
-        """Rank predictions using composite score with prop-type interleaving.
+        """Rank predictions using Strategy P filter + composite score interleaving.
 
-        Combines edge with research-backed signals (soft books, star unders,
-        consensus agreement, odds spread) then interleaves across prop types.
+        Strategy P (backtest-validated): edge 5-15%, confidence >= 0.55.
+        Caps displayed edge at 15% (higher values are data artifacts).
+        Filters out thin-history players (< 10 games).
         """
         STRATEGY_PROPS = {"threes", "points", "pts_rebs_asts", "steals", "blocks", "assists", "rebounds"}
+        EDGE_CAP = 15.0
+        MIN_CONFIDENCE = 0.55
+        MIN_EDGE = 5.0
+        MAX_EDGE = 15.0
+
         strategy = []
         other = []
         for p in predictions:
-            if (p.get("side", "").lower() == "under"
-                    and p.get("prop_type", "") in STRATEGY_PROPS
-                    and p.get("confidence", 0) >= 0.53):
+            edge = abs(p.get("edge_percent", 0))
+            conf = p.get("confidence", 0)
+            ptype = p.get("prop_type", "")
+
+            # Cap displayed edge at 15% — higher values are noise
+            if edge > EDGE_CAP:
+                p["edge_percent"] = EDGE_CAP if p.get("edge_percent", 0) > 0 else -EDGE_CAP
+                p["edge_capped"] = True
+
+            # Strategy P: edge 5-15%, confidence >= 0.55, core props
+            passes_filter = (
+                MIN_EDGE <= edge <= MAX_EDGE
+                and conf >= MIN_CONFIDENCE
+                and ptype in STRATEGY_PROPS
+            )
+
+            if passes_filter:
+                p["strategy_p"] = True
                 p["composite_score"] = AnalysisEngine._compute_pick_score(p)
                 strategy.append(p)
             else:
+                p["strategy_p"] = False
                 other.append(p)
 
         if not strategy:
@@ -2339,6 +2508,64 @@ class AnalysisEngine:
                 "source": "v2_realtime_recalc",
             }
             pred.update(consensus_data)
+
+            # Overlay v8 calibrated classifier probabilities
+            if self.use_v8 and self.v8_predictor:
+                try:
+                    game_date = datetime.now().strftime("%Y-%m-%d")
+                    v8_result = self.v8_predictor.predict(
+                        pname, ptype, game_date,
+                        {"line": fresh_line, "over_odds": int(fresh_over),
+                         "under_odds": int(fresh_under), "all_books": fresh_all_books}
+                    )
+                    if v8_result:
+                        pred["v8_p_over"] = v8_result["p_over"]
+                        pred["v8_p_under"] = v8_result["p_under"]
+                        pred["v8_model_prob"] = v8_result["model_prob"]
+                        pred["v8_consensus_prob"] = v8_result["consensus_prob"]
+                        pred["v8_blended_prob"] = v8_result["blended_prob"]
+                        pred["v8_edge"] = v8_result["edge"]
+                        pred["v8_side"] = v8_result["side"]
+                        pred["v8_kelly"] = v8_result["kelly_fraction"]
+                        pred["v8_recommended_bet_pct"] = v8_result["recommended_bet_pct"]
+                        pred["v8_confidence"] = v8_result["confidence"]
+                        pred["edge_percent"] = round(v8_result["edge"] * 100, 1)
+                        pred["confidence"] = v8_result["confidence"]
+                        pred["side"] = v8_result["side"]
+                        pred["p_over"] = v8_result["p_over"]
+                        pred["p_under"] = v8_result["p_under"]
+                        pred["our_probability"] = round(
+                            max(v8_result["p_over"], v8_result["p_under"]), 4)
+                except Exception as e:
+                    logger.debug("v8 recalc failed for %s: %s", cache_key, e)
+
+            # Add account health recommendation per book
+            if self.account_health and pred.get("line_shopping"):
+                try:
+                    for shop_entry in pred["line_shopping"]:
+                        book = shop_entry.get("book", "")
+                        health = self.account_health.get_book_health(book)
+                        if health and health.get("status") != "unknown":
+                            shop_entry["health_risk"] = health.get("limiting_risk_score", 0)
+                            shop_entry["health_status"] = health.get("status", "healthy")
+                except Exception:
+                    pass
+
+            # Cap displayed edge at 15% — higher values are data artifacts
+            raw_edge = pred["edge_percent"]
+            if abs(raw_edge) > 15.0:
+                pred["edge_percent"] = 15.0 if raw_edge > 0 else -15.0
+                pred["edge_capped"] = True
+
+            # Strategy P tag: edge 5-15%, confidence >= 0.55
+            edge_abs = abs(pred["edge_percent"])
+            pred["strategy_p"] = (
+                5.0 <= edge_abs <= 15.0
+                and pred.get("confidence", 0) >= 0.55
+                and ptype in {"threes", "points", "pts_rebs_asts", "steals",
+                              "blocks", "assists", "rebounds"}
+            )
+
             # Tag with empirical filter tier
             if self.pick_filter:
                 try:
@@ -2581,6 +2808,19 @@ class AnalysisEngine:
 
             games_result[str(game_id)] = game_entry
             total_preds += game_entry["count"]
+
+        # Send push alerts for high-edge predictions across all games
+        if self.alert_manager and games_result:
+            try:
+                all_preds = []
+                for ge in games_result.values():
+                    all_preds.extend(ge.get("predictions", []))
+                if all_preds:
+                    alerts = self.alert_manager.check_and_alert(all_preds)
+                    if alerts:
+                        logger.info("Sent %d real-time edge alerts", len(alerts))
+            except Exception as e:
+                logger.debug("Real-time push alert error: %s", e)
 
         elapsed = _time.time() - t0
 
