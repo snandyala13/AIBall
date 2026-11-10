@@ -10,9 +10,9 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: aiball
-  ECS_CLUSTER: aiball-cluster
-  ECS_SERVICE: aiball-web
+  ECR_REPOSITORY: propterminal
+  ECS_CLUSTER: propterminal-cluster
+  ECS_SERVICE: propterminal-web
 
 jobs:
   deploy:
