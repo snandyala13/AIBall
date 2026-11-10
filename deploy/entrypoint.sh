@@ -4,11 +4,13 @@ set -e
 DATA_DIR="${EFS_MOUNT:-/data}"
 PRIMARY_MODEL="v3_classifier_holdout"
 FALLBACK_MODEL="v2_final"
+V8_MODEL="v8_calibrated"
 
 # Ensure EFS directories exist
 mkdir -p "$DATA_DIR/outputs" \
          "$DATA_DIR/models/$PRIMARY_MODEL" \
-         "$DATA_DIR/models/$FALLBACK_MODEL"
+         "$DATA_DIR/models/$FALLBACK_MODEL" \
+         "$DATA_DIR/models/$V8_MODEL"
 
 # Symlink persistent paths so app code finds them at expected __file__-relative locations
 for db in cache.db lines.db; do
@@ -22,8 +24,9 @@ for dir in outputs; do
 done
 
 # Models: symlink each model dir from EFS into the container
-for mdir in "$PRIMARY_MODEL" "$FALLBACK_MODEL"; do
+for mdir in "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$V8_MODEL"; do
     if [ -d "$DATA_DIR/models/$mdir" ] && [ "$(ls -A "$DATA_DIR/models/$mdir" 2>/dev/null)" ]; then
+        mkdir -p "/app/models"
         rm -rf "/app/models/$mdir"
         ln -sf "$DATA_DIR/models/$mdir" "/app/models/$mdir"
     fi
@@ -47,6 +50,19 @@ if [ ! -f "$DATA_DIR/models/$FALLBACK_MODEL/training_meta.json" ]; then
         echo "Bootstrapping fallback $FALLBACK_MODEL models to EFS..."
         cp -r "/app/models_bundled/$FALLBACK_MODEL/"* "$DATA_DIR/models/$FALLBACK_MODEL/"
     fi
+fi
+
+# v8 calibrated classifier (always sync to pick up new model versions)
+if [ -d "/app/models_bundled/$V8_MODEL" ]; then
+    echo "Syncing $V8_MODEL models to EFS..."
+    cp -r "/app/models_bundled/$V8_MODEL/"* "$DATA_DIR/models/$V8_MODEL/"
+fi
+
+# Pull models from S3 if available (picks up v8 and any new model versions)
+if [ -n "$S3_BUCKET" ]; then
+    echo "Syncing models from S3..."
+    aws s3 sync "s3://${S3_BUCKET}/models/" "$DATA_DIR/models/" \
+        --quiet 2>/dev/null || echo "S3 model sync failed (will use bundled/EFS if available)"
 fi
 
 # Pull training data from S3 if not on EFS (needed for feature builder)

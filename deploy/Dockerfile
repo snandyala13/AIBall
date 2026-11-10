@@ -18,10 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Bundle models for first-deploy bootstrap (copied to EFS on first run)
-# Primary: v3_classifier_holdout  Fallback: v2_final
+# Primary: v3_classifier_holdout  Fallback: v2_final  ML: v8_calibrated
 RUN mkdir -p models_bundled && \
     cp -r models/v3_classifier_holdout models_bundled/v3_classifier_holdout 2>/dev/null || true && \
-    cp -r models/v2_final models_bundled/v2_final 2>/dev/null || true
+    cp -r models/v2_final models_bundled/v2_final 2>/dev/null || true && \
+    cp -r models/v8_calibrated models_bundled/v8_calibrated 2>/dev/null || true
 
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
