@@ -215,6 +215,37 @@ async def startup_preload():
     # dev server does not poll as well and double the credit spend; PAPER_LOG_ENABLED=1 or 0 overrides either way.
     if os.environ.get("PAPER_LOG_ENABLED", "1" if os.environ.get("EFS_MOUNT") else "0") == "1":
         asyncio.create_task(_paper_log_scheduler())
+    # Paper-mode news monitor (news_monitor.py; no bets are placed). Same default: on only on AWS; NEWS_MONITOR_ENABLED overrides.
+    if os.environ.get("NEWS_MONITOR_ENABLED", "1" if os.environ.get("EFS_MOUNT") else "0") == "1":
+        asyncio.create_task(_news_monitor_scheduler())
+
+
+async def _news_monitor_scheduler():
+    """Every minute while the server is up: news_monitor.tick(), which polls only games within 3 hours of tip (about 2,000-3,000
+    credits on a ten-game night; NEWS_MONITOR_DAILY_CAP stops it). Once a day from noon Eastern, after the paper log's morning
+    box-score refresh: grade finished games."""
+    import pytz
+    et = pytz.timezone("US/Eastern")
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(120)
+    graded_on, poll_s = None, 60
+    logger.info("News monitor scheduler started")
+    while True:
+        started = loop.time()
+        try:
+            import news_monitor
+            poll_s = news_monitor.POLL_S
+            now_et = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(et)
+            if graded_on != now_et.date() and now_et.hour >= 12:
+                out = await asyncio.to_thread(news_monitor.scheduled, "grade")
+                graded_on = now_et.date()
+                logger.info("News monitor graded: %s", " | ".join(out.strip().splitlines()[-3:]))
+            out = await asyncio.to_thread(news_monitor.scheduled, "tick")
+            for line in out.strip().splitlines():
+                logger.info("News monitor: %s", line)
+        except Exception as e:
+            logger.error("News monitor scheduler error: %s", e)
+        await asyncio.sleep(max(5, poll_s - (loop.time() - started)))
 
 
 async def _paper_log_scheduler():
@@ -654,6 +685,19 @@ async def api_paper_log(limit: int = 50):
     except Exception as e:
         logger.error("Paper log report failed: %s", e)
         return JSONResponse({"error": "paper log unavailable"}, status_code=500)
+
+
+@app.get("/api/news-monitor")
+async def api_news_monitor(limit: int = 50):
+    """Paper-mode news monitor (no bets placed): the report, and the latest triggers and flags."""
+    try:
+        import news_monitor
+        report = await asyncio.to_thread(news_monitor.scheduled, "report")
+        recent = await asyncio.to_thread(news_monitor.recent, max(1, min(limit, 500)))
+        return JSONResponse({"report": report, **recent})
+    except Exception as e:
+        logger.error("News monitor report failed: %s", e)
+        return JSONResponse({"error": "news monitor unavailable"}, status_code=500)
 
 
 @app.get("/api/stale-lines")
