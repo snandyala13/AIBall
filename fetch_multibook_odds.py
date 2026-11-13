@@ -36,8 +36,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
+
+from clean_backtest import SNAPSHOT_LAG_MINUTES, norm_name
 
 logging.basicConfig(
     level=logging.INFO,
@@ -229,34 +232,37 @@ def compute_snapshot_time(commence_time: str, minutes_before: int = 10) -> str:
     return snap.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _implied(odds) -> float:
+    return abs(odds) / (abs(odds) + 100.0) if odds < 0 else 100.0 / (odds + 100.0)
+
+
 def parse_all_books(event_data: Dict, event_id: str, snapshot_time: str) -> List[tuple]:
     rows = []
     for bk in event_data.get("bookmakers", []):
         bookmaker = bk.get("key", "")
         for market in bk.get("markets", []):
             mkt = market.get("key", "")
-            player_lines = {}
+            # Some books list several lines per player in one market. Pair each over with the
+            # under at the same line, then keep the line priced closest to even (the main line).
+            # Taking the first line with the last prices stores a price that belongs to another line.
+            by_line = {}
             for outcome in market.get("outcomes", []):
                 player = outcome.get("description", "")
                 direction = outcome.get("name", "")
-                price = outcome.get("price", 0)
-                point = outcome.get("point", 0)
-                if not player:
+                if not player or direction not in ("Over", "Under"):
                     continue
-                if player not in player_lines:
-                    player_lines[player] = {"line": point}
-                if direction == "Over":
-                    player_lines[player]["over_odds"] = price
-                elif direction == "Under":
-                    player_lines[player]["under_odds"] = price
+                by_line.setdefault((player, float(outcome.get("point", 0))), {})[direction] = outcome.get("price", 0)
 
-            for player, ld in player_lines.items():
-                if "over_odds" in ld and "under_odds" in ld:
-                    rows.append((
-                        event_id, bookmaker, mkt, player,
-                        float(ld["line"]), ld["over_odds"], ld["under_odds"],
-                        snapshot_time,
-                    ))
+            main_line = {}
+            for (player, point), prices in by_line.items():
+                if "Over" not in prices or "Under" not in prices:
+                    continue
+                balance = abs(_implied(prices["Over"]) - _implied(prices["Under"]))
+                if player not in main_line or balance < main_line[player][0]:
+                    main_line[player] = (balance, point, prices["Over"], prices["Under"])
+
+            for player, (_, point, over_o, under_o) in main_line.items():
+                rows.append((event_id, bookmaker, mkt, player, point, over_o, under_o, snapshot_time))
     return rows
 
 
@@ -401,6 +407,33 @@ def show_stats():
     print("=" * 50)
 
 
+def _closing_quotes(conn) -> dict:
+    """(ET game date, normalized player, market) -> {book: quote} from each event's closing snapshot."""
+    et = ZoneInfo("America/New_York")
+    quotes, in_window, game_date, names = {}, {}, {}, {}
+    rows = conn.execute("""
+        SELECT e.commence_time, p.snapshot_time, p.bookmaker, p.market, p.player_name,
+               p.line, p.over_odds, p.under_odds
+        FROM props p
+        JOIN events e ON p.event_id = e.event_id
+    """)
+    for commence, snap, book, market, player, line_val, over_o, under_o in rows:
+        timing = (commence, snap)
+        if timing not in in_window:
+            tip = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+            lag = (datetime.fromisoformat(snap.replace("Z", "+00:00")) - tip).total_seconds() / 60.0
+            in_window[timing] = SNAPSHOT_LAG_MINUTES[0] <= lag <= SNAPSHOT_LAG_MINUTES[1]
+            # events.date is the day the event was first listed, often days before it was played.
+            game_date[commence] = tip.astimezone(et).strftime("%Y-%m-%d")
+        if not in_window[timing]:
+            continue
+        if player not in names:
+            names[player] = norm_name(player)
+        quotes.setdefault((game_date[commence], names[player], market), {}).setdefault(
+            book, {"line": line_val, "over_odds": over_o, "under_odds": under_o, "snapshot_time": snap})
+    return quotes
+
+
 def export_enriched_legs(season: str):
     """Join multi-book data with existing legs to create enriched dataset."""
     init_db()
@@ -414,6 +447,7 @@ def export_enriched_legs(season: str):
         legs = json.load(f)
 
     conn = sqlite3.connect(str(DB_PATH))
+    quotes = _closing_quotes(conn)
 
     enriched = []
     matched = 0
@@ -427,32 +461,19 @@ def export_enriched_legs(season: str):
             enriched.append(leg)
             continue
 
-        leg_line = leg.get("line", 0)
-        rows = conn.execute("""
-            SELECT bookmaker, line, over_odds, under_odds
-            FROM props p
-            JOIN events e ON p.event_id = e.event_id
-            WHERE e.date = ? AND p.player_name = ? AND p.market = ?
-        """, (date, player, market_key)).fetchall()
+        by_book = quotes.get((date, norm_name(player), market_key), {})
+        dk = by_book.get("draftkings")
 
-        if not rows:
-            last_name = player.split()[-1] if player else ""
-            if last_name:
-                rows = conn.execute("""
-                    SELECT bookmaker, line, over_odds, under_odds
-                    FROM props p
-                    JOIN events e ON p.event_id = e.event_id
-                    WHERE e.date = ? AND p.player_name LIKE ? AND p.market = ?
-                """, (date, f"%{last_name}%", market_key)).fetchall()
-
-        if rows:
+        if dk:
             matched += 1
-            # Each book may have multiple alternate lines. Pick the one closest
-            # to our leg's DK line for each book.
-            books = {}
-            for bk, line_val, over_o, under_o in rows:
-                if bk not in books or abs(line_val - leg_line) < abs(books[bk]["line"] - leg_line):
-                    books[bk] = {"line": line_val, "over_odds": over_o, "under_odds": under_o}
+            # The other books were captured minutes before tip; the leg's own DraftKings price was
+            # captured hours earlier. Reprice the leg from the same snapshot, or the consensus
+            # would already know where that price ended up.
+            books = {bk: {"line": q["line"], "over_odds": q["over_odds"], "under_odds": q["under_odds"]}
+                     for bk, q in by_book.items() if q["snapshot_time"] == dk["snapshot_time"]}
+            leg["line"], leg["over_odds"], leg["under_odds"] = dk["line"], dk["over_odds"], dk["under_odds"]
+            if leg.get("actual") is not None:
+                leg["hit"] = leg["actual"] > leg["line"]
 
             leg["all_books"] = books
             leg["num_books"] = len(books)
@@ -460,12 +481,7 @@ def export_enriched_legs(season: str):
             lines = [b["line"] for b in books.values()]
             leg["line_range"] = max(lines) - min(lines) if len(lines) > 1 else 0
             leg["consensus_line"] = sorted(lines)[len(lines) // 2]
-
-            dk = books.get("draftkings", {})
-            if dk and leg["consensus_line"]:
-                leg["dk_vs_consensus"] = dk.get("line", 0) - leg["consensus_line"]
-            else:
-                leg["dk_vs_consensus"] = 0
+            leg["dk_vs_consensus"] = dk["line"] - leg["consensus_line"]
         else:
             leg["all_books"] = {}
             leg["num_books"] = 0

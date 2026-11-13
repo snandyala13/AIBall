@@ -211,6 +211,34 @@ async def startup_preload():
     asyncio.create_task(_daily_analyze_scheduler())
     # Start the CLV closing line capture scheduler
     asyncio.create_task(_clv_closing_line_scheduler())
+    # Paper log of the unders screen (no bets are placed). Set PAPER_LOG_ENABLED=0 to switch it off.
+    if os.environ.get("PAPER_LOG_ENABLED", "1") == "1":
+        asyncio.create_task(_paper_log_scheduler())
+
+
+async def _paper_log_scheduler():
+    """Every 30 minutes from 9:00 to 21:30 Eastern while the server is up: pull live prices (Odds API, about 5 credits a game)
+    and log unders priced 2%+ above the fair price (paper_log.py). Once a day: refresh box scores and grade finished games."""
+    import pytz
+    et = pytz.timezone("US/Eastern")
+    await asyncio.sleep(90)
+    graded_on = None
+    logger.info("Paper log scheduler started")
+    while True:
+        try:
+            import paper_log
+            now_et = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(et)
+            if graded_on != now_et.date() and now_et.hour >= 8:
+                out = await asyncio.to_thread(paper_log.scheduled, "grade")
+                graded_on = now_et.date()
+                logger.info("Paper log graded: %s", " | ".join(out.strip().splitlines()[-6:]))
+            if 9 <= now_et.hour <= 21:
+                out = await asyncio.to_thread(paper_log.scheduled, "poll")
+                logger.info("Paper log poll: %s", " | ".join(out.strip().splitlines()[:2]))
+        except Exception as e:
+            logger.error("Paper log scheduler error: %s", e)
+        now_et = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(et)
+        await asyncio.sleep(max(60, (30 - now_et.minute % 30) * 60 - now_et.second + 5))
 
 
 async def _daily_analyze_scheduler():
@@ -612,6 +640,19 @@ async def api_reanalyze_game(game_id: int):
     except Exception as e:
         logger.error("Error re-analyzing game %d: %s", game_id, str(e), exc_info=True)
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get("/api/paper-log")
+async def api_paper_log(limit: int = 50):
+    """Paper log of the unders screen (no bets placed): the report by rule, and the latest flags."""
+    try:
+        import paper_log
+        report = await asyncio.to_thread(paper_log.scheduled, "report")
+        recent = await asyncio.to_thread(paper_log.recent_flags, max(1, min(limit, 500)))
+        return JSONResponse({"report": report, "recent_flags": recent})
+    except Exception as e:
+        logger.error("Paper log report failed: %s", e)
+        return JSONResponse({"error": "paper log unavailable"}, status_code=500)
 
 
 @app.get("/api/stale-lines")
