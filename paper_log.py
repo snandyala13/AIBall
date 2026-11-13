@@ -13,10 +13,10 @@ de-vigged probability moved to the book's line, otherwise the average of three o
 
 On the deployed web app the same steps run on a schedule (web/app.py, _paper_log_scheduler): a poll every 30 minutes from
 9:00 to 21:30 Eastern while the server is up, and a grade once a day. There the log lives on the shared EFS volume.
+A local dev server does not run the schedule unless PAPER_LOG_ENABLED=1.
 """
 
 import argparse
-import contextlib
 import io
 import json
 import os
@@ -35,8 +35,15 @@ _EFS = os.environ.get("EFS_MOUNT")
 LOG_DB = Path(os.environ.get("PAPER_LOG_DB") or (Path(_EFS) / "paper_log" / "paper_log.db" if _EFS else BASE_DIR / "data" / "paper_log.db"))
 SIGMA_FILE = BASE_DIR / "paper_log_sigma.json"
 _LOCK = threading.Lock()
+_OUT = threading.local()
 EV_MIN = 0.02
 SIGMA_SEASONS = [2023, 2024, 2025]
+
+
+def _say(*args):
+    """print, except that inside scheduled() it writes to that call's buffer. Only the calling thread's output is captured;
+    contextlib.redirect_stdout would swap stdout for every thread of the web app while a step runs."""
+    print(*args, file=getattr(_OUT, "buf", None) or sys.stdout)
 
 
 def _db() -> sqlite3.Connection:
@@ -95,7 +102,7 @@ def poll(hours_ahead: float):
     cur = conn.execute("insert into polls (polled_at, events, quotes, credits, balance) values (?,?,?,?,?)", (stamp, len(upcoming), len(Q), spent, balance))
     poll_id = cur.lastrowid
     conn.executemany("insert into quotes values (?,?,?,?,?,?,?,?,?)", [(poll_id, *r) for r in Q.itertuples(index=False)])
-    print(f"{stamp}: {len(upcoming)} games tipping within {hours_ahead:g} hours, {len(Q):,} quotes, {spent} credits (balance {balance})")
+    _say(f"{stamp}: {len(upcoming)} games tipping within {hours_ahead:g} hours, {len(Q):,} quotes, {spent} credits (balance {balance})")
     if Q.empty:
         conn.commit()
         return
@@ -126,14 +133,14 @@ def poll(hours_ahead: float):
                           float(r.line), int(r.under_odds), float(1 - r.p_s1), float(r.ev), r.ref, float(r.age) if pd.notna(r.age) else None,
                           stamp, 1, float(r.ev)))
     conn.commit()
-    print(f"unders at 2%+ above the fair price right now: {len(flagged)} ({new} new to the log)")
+    _say(f"unders at 2%+ above the fair price right now: {len(flagged)} ({new} new to the log)")
     show = flagged.sort_values("ev", ascending=False).head(25)
     for r in show.itertuples(index=False):
         e, tip = info[r.event_id]
-        print(f"   {r.player:<24} {r.prop_type:<14} under {r.line:<5} {r.under_odds:>+5} at {r.book:<11} fair {100 * (1 - r.p_s1):4.1f}%  value {100 * r.ev:+5.1f}%  "
+        _say(f"   {r.player:<24} {r.prop_type:<14} under {r.line:<5} {r.under_odds:>+5} at {r.book:<11} fair {100 * (1 - r.p_s1):4.1f}%  value {100 * r.ev:+5.1f}%  "
               f"[{r.ref}]  {e.get('away_team', '')[:14]} @ {e.get('home_team', '')[:14]}, tips {tip.astimezone(ET):%a %H:%M} ET")
     if len(flagged) > len(show):
-        print(f"   ... and {len(flagged) - len(show)} more")
+        _say(f"   ... and {len(flagged) - len(show)} more")
 
 
 def grade(refresh_box: bool):
@@ -149,7 +156,7 @@ def grade(refresh_box: bool):
     now = datetime.now(timezone.utc)
     F = F[pd.to_datetime(F["commence_time"], utc=True) < now - timedelta(hours=4)]
     if F.empty:
-        print("nothing to grade yet")
+        _say("nothing to grade yet")
         return
     box = load_box()
     games = _games_table(box)
@@ -178,7 +185,7 @@ def grade(refresh_box: bool):
                          (close[0] if close else None, close[1] if close else None, actual, int(played), won, now.strftime("%Y-%m-%dT%H:%M:%SZ"), r.rid))
             done += 1
     conn.commit()
-    print(f"graded {done} flags")
+    _say(f"graded {done} flags")
 
 
 def report():
@@ -188,32 +195,32 @@ def report():
     conn = _db()
     F = pd.read_sql("select * from flags", conn)
     polls = pd.read_sql("select count(*) n, sum(credits) c, min(polled_at) a, max(polled_at) b from polls", conn).iloc[0]
-    print(f"polls {int(polls['n'])} ({polls['a']} to {polls['b']}), credits {int(polls['c'] or 0):,}; flags logged {len(F):,}; graded {int(F['graded_at'].notna().sum()):,}; "
+    _say(f"polls {int(polls['n'])} ({polls['a']} to {polls['b']}), credits {int(polls['c'] or 0):,}; flags logged {len(F):,}; graded {int(F['graded_at'].notna().sum()):,}; "
           f"void (did not play) {int((F['played'] == 0).sum()):,}")
     G = F[F["won"].notna()].copy()
     if G.empty:
         return
     G["dec"], G["won"] = _dec(G["under_odds"]), G["won"].astype(bool)
-    print(f"   all graded flags, at the price first seen: {ml.fmt(ml.roi(G))}")
+    _say(f"   all graded flags, at the price first seen: {ml.fmt(ml.roi(G))}")
     for ref, g in G.groupby("ref"):
-        print(f"      {ref:<22} {ml.fmt(ml.roi(g))}")
+        _say(f"      {ref:<22} {ml.fmt(ml.roi(g))}")
     for book, g in G.groupby("book"):
-        print(f"      {book:<22} {ml.fmt(ml.roi(g))}")
+        _say(f"      {book:<22} {ml.fmt(ml.roi(g))}")
     C = G[G["close_under_odds"].notna()]
     if len(C):
         move = (_dec(C["under_odds"]) / _dec(C["close_under_odds"]) - 1) * 100
-        print(f"   price first seen against the same book's last price before tip, same line ({len(C):,} flags): {move.mean():+.2f}% better on average; "
+        _say(f"   price first seen against the same book's last price before tip, same line ({len(C):,} flags): {move.mean():+.2f}% better on average; "
               f"still as good or better at the end for {(C['close_under_odds'] >= C['under_odds']).mean() * 100:.0f}%")
     # Volume views (added 2026-11-12 for the owner's 3-5 and 30-50 bets a day preferences; the logging rule itself is unchanged):
     # the 4%+ rule is usable live; the nightly top 30/40 by value uses the whole night's flags, so it is a hindsight cap.
     nights = sorted(F["date"].unique())
-    print(f"   flags per game night: mean {len(F) / max(1, len(nights)):.1f}; " + ", ".join(
+    _say(f"   flags per game night: mean {len(F) / max(1, len(nights)):.1f}; " + ", ".join(
         f"{lab} {share:.0%}" for lab, share in zip(("0", "1-2", "3-5", "6-29", "30-49", "50+"),
                                                    np.histogram(F.groupby("date").size().reindex(nights, fill_value=0), [0, 1, 3, 6, 30, 50, 10_000])[0] / max(1, len(nights)))))
     for name, sub in [("value 4%+ at first sight (live rule)", G[G["ev"] >= 0.04]),
                       ("each night's top 30 by value", G.sort_values("ev", ascending=False).groupby("date").head(30)),
                       ("each night's top 40 by value", G.sort_values("ev", ascending=False).groupby("date").head(40))]:
-        print(f"   {name:<40} {ml.fmt(ml.roi(sub))}")
+        _say(f"   {name:<40} {ml.fmt(ml.roi(sub))}")
 
 
 def recent_flags(n: int = 50) -> list:
@@ -225,16 +232,24 @@ def recent_flags(n: int = 50) -> list:
 
 
 def scheduled(cmd: str) -> str:
-    """Run one scheduled step and return what it printed (the web app's scheduler and /api/paper-log use this)."""
+    """Run one scheduled step and return what it printed (the web app's scheduler and /api/paper-log use this).
+    The command-line steps stop with sys.exit when an API call fails or a key is missing. SystemExit is not an Exception,
+    so inside the web app it would get past the scheduler's handler and shut the server down; it is caught here instead."""
     buf = io.StringIO()
-    with _LOCK, contextlib.redirect_stdout(buf):
-        if cmd == "poll":
-            poll(12)
-        elif cmd == "grade":
-            grade(True)
-            report()
-        elif cmd == "report":
-            report()
+    with _LOCK:
+        _OUT.buf = buf
+        try:
+            if cmd == "poll":
+                poll(12)
+            elif cmd == "grade":
+                grade(True)
+                report()
+            elif cmd == "report":
+                report()
+        except SystemExit as e:
+            _say(f"{cmd} stopped: {e}")
+        finally:
+            _OUT.buf = None
     return buf.getvalue()
 
 

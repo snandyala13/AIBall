@@ -211,8 +211,9 @@ async def startup_preload():
     asyncio.create_task(_daily_analyze_scheduler())
     # Start the CLV closing line capture scheduler
     asyncio.create_task(_clv_closing_line_scheduler())
-    # Paper log of the unders screen (no bets are placed). Set PAPER_LOG_ENABLED=0 to switch it off.
-    if os.environ.get("PAPER_LOG_ENABLED", "1") == "1":
+    # Paper log of the unders screen (no bets are placed). On by default only on AWS (EFS_MOUNT is set there), so a local
+    # dev server does not poll as well and double the credit spend; PAPER_LOG_ENABLED=1 or 0 overrides either way.
+    if os.environ.get("PAPER_LOG_ENABLED", "1" if os.environ.get("EFS_MOUNT") else "0") == "1":
         asyncio.create_task(_paper_log_scheduler())
 
 
