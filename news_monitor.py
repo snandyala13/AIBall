@@ -18,13 +18,26 @@ Frozen rules (outputs/clean/feature_lab/protocol_news_speed.json and protocol_ne
                the side with the higher predicted value, at 3%+; one per teammate, prop and side, at the best book
 The fair price uses the line-conversion spreads frozen in paper_log_sigma.json (2023-24 to 2025-26).
 
+Fast-book rule: MEASUREMENT ONLY, logged in its own table (ff_flags), never changes the rule above. It did not pass its
+test (fast_follow_lab.py, protocol_fast_follow.json, audit section 8m): its value held up (+7.6% on 275 bets), but only
+35% of its flagged prices were still on offer 5 minutes later. It runs here to measure, at one-minute resolution, how long
+such prices last.
+  reference    each book's quote before the trigger: points from the minute poll about 5 minutes earlier, other markets
+               from the baseline
+  movers       books whose quote for a teammate's prop differs from their reference quote (2+ needed); their de-vigged
+               prices, moved to the stale line, averaged on the normal scale, give the fair price
+  flag         a teammate's quote at a bet book still at its reference quote, worth 3%+ against that price, in the 30
+               minutes after the trigger; one per teammate, prop and side
+Every flagged price of either rule is then re-checked at each later poll for an hour (points every minute), recording
+when it was last seen unchanged and when it first was not.
+
 Polling, for games tipping within 3 hours (the events list is free):
   every minute            player_points at the ten books: 1 credit a game
   every 30 minutes        all five markets at the ten books, 5 credits a game: the baseline for the stale test and the
                           pre-news fair price; not refreshed while a key player is missing at a book that had him
-  at a trigger            all five markets at once: the quotes the flags use; again about 2 and 5 minutes later, to see
-                          how long each flagged price stays on offer
-  10 minutes before tip   all five markets once, for games with flags: the closing fair price used in grading
+  at a trigger            all five markets at once: the quotes the flags use; again about 2, 5 and 10 minutes later
+                          (every trigger), to see how long flagged prices stay on offer and for the fast-book rule
+  10 minutes before tip   all five markets once, for games with flags of either rule: the closing fair price used in grading
 About 2,000-3,000 credits on a ten-game night; a daily cap (NEWS_MONITOR_DAILY_CAP, default 4,000) stops polling.
 Prices are as the Odds API reports them; anyone acting on a flag must still see the price at the book.
 
@@ -63,7 +76,11 @@ WINDOW = timedelta(hours=float(os.environ.get("NEWS_MONITOR_WINDOW_H", "3")))
 BASE_EVERY = timedelta(minutes=30)
 STOP_BEFORE_TIP = timedelta(minutes=5)
 CLOSE_BEFORE_TIP = timedelta(minutes=10)
-FOLLOW_UPS = (2, 5)
+FOLLOW_UPS = (2, 5, 10)
+FF_MIN_MOVERS = 2
+FF_HORIZON = timedelta(minutes=30)
+FF_REF_LAG = timedelta(minutes=4, seconds=30)  # the minute poll about 5 minutes before the trigger (the tests' snapshot spacing)
+TRACK_FOR = timedelta(minutes=60)
 EVENTS_EVERY = timedelta(minutes=10)
 HEARTBEAT = timedelta(minutes=30)
 DAILY_CAP = int(os.environ.get("NEWS_MONITOR_DAILY_CAP", "4000"))
@@ -102,7 +119,17 @@ def _db() -> sqlite3.Connection:
             fair_pred real, value_pred real, quote_age_min real, flagged_at text, commence_time text, date text,
             still_2 text, still_5 text, close_fair real, value_close real, actual real, played integer, won integer,
             graded_at text, primary key (event_id, player, prop_type, side));
+        create table if not exists ff_flags (event_id text, trigger_id integer, key_player text, player text, prop_type text,
+            side text, book text, line real, over_odds integer, under_odds integer, fair_ff real, value_ff real,
+            n_movers integer, movers text, quote_age_min real, flagged_at text, mins_after real, commence_time text, date text,
+            still_2 text, still_5 text, still_10 text, last_same_at text, gone_at text, close_fair real, value_close real,
+            actual real, played integer, won integer, graded_at text, primary key (event_id, player, prop_type, side));
     """)
+    have = {r[1] for r in conn.execute("pragma table_info(flags)")}
+    for col in ("still_10", "last_same_at", "gone_at"):  # measurement columns added 2026-11-13; the rule is unchanged
+        if col not in have:
+            conn.execute(f"alter table flags add column {col} text")
+    conn.commit()
     return conn
 
 
@@ -180,6 +207,41 @@ def compute_flags(event_id: str, date: str, teams, keys: dict, full: pd.DataFram
     if len(F):
         F = F.sort_values("value_pred", ascending=False).drop_duplicates(["player", "prop_type", "side"]).reset_index(drop=True)
     return notes, F
+
+
+def fast_flags(cur: pd.DataFrame, ref: pd.DataFrame, mates: set, sig: dict) -> pd.DataFrame:
+    """MEASUREMENT ONLY (did not pass its test: audit section 8m). Teammates' quotes at the six bet books still at their
+    reference quote, priced against the books whose quote has changed since (FF_MIN_MOVERS or more): the movers' power-de-vigged
+    probabilities, moved to the stale quote's line with the frozen spreads, averaged on the normal scale. Flags at 3%+ on the
+    better side; one per player, prop and side, at the best book."""
+    import market_lab as ml
+    from scipy.stats import norm
+
+    from clean_backtest import SIX_BOOKS, _dec
+
+    key = ["player", "prop_type", "book"]
+    c = cur[cur["player"].isin(mates)].drop_duplicates(key)
+    r = ref[ref["player"].isin(mates)].drop_duplicates(key)[key + ["line", "over_odds", "under_odds"]]
+    j = c.merge(r, on=key, suffixes=("", "_ref"))
+    same = (j["line"] == j["line_ref"]) & (j["over_odds"] == j["over_odds_ref"]) & (j["under_odds"] == j["under_odds_ref"])
+    movers, stale = j[~same], j[same & j["book"].isin(SIX_BOOKS)]
+    if movers.empty or stale.empty:
+        return pd.DataFrame()
+    mv = movers[key + ["line"]].rename(columns={"book": "book_m", "line": "line_m"})
+    mv["z_m"] = norm.ppf(np.clip(ml.devig_power(movers["over_odds"], movers["under_odds"]), 0.005, 0.995))
+    m = stale[key + ["line"]].merge(mv, on=["player", "prop_type"])
+    m["zc"] = m["z_m"] + (m["line_m"] - m["line"]) / ml.sigma_of(m["prop_type"], m["line"], sig)
+    agg = m.groupby(key).agg(z=("zc", "mean"), n_movers=("zc", "size"), movers=("book_m", lambda s: ",".join(sorted(s)))).reset_index()
+    F = stale[COLS].merge(agg, on=key)
+    F = F[F["n_movers"] >= FF_MIN_MOVERS].copy()
+    if F.empty:
+        return pd.DataFrame()
+    F["fair_ff"] = norm.cdf(F["z"].to_numpy(float))
+    vo = _dec(F["over_odds"]) * F["fair_ff"].to_numpy() - 1
+    vu = _dec(F["under_odds"]) * (1 - F["fair_ff"].to_numpy()) - 1
+    F["side"], F["value_ff"] = np.where(vo >= vu, "over", "under"), np.maximum(vo, vu)
+    F = F[F["value_ff"] >= EV_MIN]
+    return F.sort_values("value_ff", ascending=False).drop_duplicates(["player", "prop_type", "side"]).reset_index(drop=True)
 
 
 # =============================================================================
@@ -265,6 +327,78 @@ def _in_flight(st: dict) -> bool:
     return bool(had - set(zip(st["pts"]["player"], st["pts"]["book"])))
 
 
+def _sig() -> dict:
+    if "sig" not in _STATE:
+        import paper_log
+        _STATE["sig"] = paper_log._sigma()
+    return _STATE["sig"]
+
+
+def _ff_reference(st: dict, now: datetime):
+    """Quotes before the trigger for the fast-book measurement: points from the minute poll about 5 minutes earlier (the
+    oldest kept if there is less history), the other markets from the baseline."""
+    hist = st.get("pts_hist") or []
+    older = [p for t, p in hist if t <= now - FF_REF_LAG]
+    pts = older[-1] if older else (hist[0][1] if hist else None)
+    parts = []
+    if st["base"] is not None:
+        parts.append(st["base"] if pts is None else st["base"][st["base"]["prop_type"] != "points"])
+    if pts is not None:
+        parts.append(pts)
+    return pd.concat(parts, ignore_index=True) if parts else None
+
+
+def _ff_check(conn, e: dict, st: dict, Q: pd.DataFrame, now: datetime, stamp: str):
+    """Fast-book flags (measurement only) for each trigger on this game still inside its 30 minutes, from the markets in Q."""
+    for w in [w for w in st.get("ff", []) if now - w["t0"] <= FF_HORIZON]:
+        ref = w["ref"][w["ref"]["prop_type"].isin(set(Q["prop_type"]))]
+        F = fast_flags(Q, ref, w["mates"], _sig())
+        mins = (now - w["t0"]).total_seconds() / 60
+        for r in F.itertuples(index=False):
+            age = (pd.Timestamp(now) - pd.Timestamp(r.last_update)).total_seconds() / 60 if isinstance(r.last_update, str) else None
+            cur = conn.execute("insert or ignore into ff_flags (event_id, trigger_id, key_player, player, prop_type, side, book, line, "
+                               "over_odds, under_odds, fair_ff, value_ff, n_movers, movers, quote_age_min, flagged_at, mins_after, "
+                               "commence_time, date) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               (e["id"], w["tid"], w["key"], r.player, r.prop_type, r.side, r.book, float(r.line), int(r.over_odds),
+                                int(r.under_odds), float(r.fair_ff), float(r.value_ff), int(r.n_movers), r.movers, age, stamp, mins,
+                                e["commence_time"], w["date"]))
+            if cur.rowcount:
+                price = r.over_odds if r.side == "over" else r.under_odds
+                _say(f"FAST    {r.player} {r.prop_type} {r.side} {r.line:g} {price:+d} at {r.book}, {mins:.0f} min after the pull: "
+                     f"{r.n_movers} books moved ({r.movers}), their fair {100 * r.fair_ff:.1f}% over; value {100 * r.value_ff:+.1f}% "
+                     f"(measurement only, paper)")
+    conn.commit()
+
+
+def _track(conn, event_id: str, Q: pd.DataFrame, now: datetime, stamp: str):
+    """How long flagged prices last (both rules): for flags made in the last hour on markets this poll covers, record the
+    last time the same line and price was seen, or the first time it was not. Skipped where the book quoted no part of that
+    market in this poll, since a missing feed says nothing about the price."""
+    present = set(zip(Q["book"], Q["prop_type"]))
+    idx = Q.drop_duplicates(["player", "prop_type", "book"]).set_index(["player", "prop_type", "book"])
+    for table in ("flags", "ff_flags"):
+        F = pd.read_sql(f"select rowid as rid, player, prop_type, side, book, line, over_odds, under_odds from {table} "
+                        "where event_id=? and gone_at is null and flagged_at >= ?", conn, params=(event_id, _stamp(now - TRACK_FOR)))
+        for r in F.itertuples(index=False):
+            if (r.book, r.prop_type) not in present:
+                continue
+            k = (r.player, r.prop_type, r.book)
+            same = False
+            if k in idx.index:
+                q = idx.loc[k]
+                same = bool(q["line"] == r.line and (q["over_odds"] == r.over_odds if r.side == "over" else q["under_odds"] == r.under_odds))
+            conn.execute(f"update {table} set {'last_same_at' if same else 'gone_at'}=? where rowid=?", (stamp, r.rid))
+    conn.commit()
+
+
+def _measure(what: str, fn, *args):
+    """Run a measurement step; an error there is reported and never stops the frozen rule."""
+    try:
+        fn(*args)
+    except Exception as ex:  # noqa: BLE001
+        _say(f"fast-book/tracking measurement error ({what}): {type(ex).__name__}: {ex}")
+
+
 def _trigger(conn, e: dict, st: dict, keys: dict, now: datetime, stamp: str, full=None, poll_id=None):
     from fetch_early_odds import ET, MARKETS
 
@@ -308,18 +442,30 @@ def _trigger(conn, e: dict, st: dict, keys: dict, now: datetime, stamp: str, ful
         _say(f"FLAG    {r.player} {r.prop_type} {r.side} {r.line:g} {price:+d} at {r.book}: fair before the news "
              f"{100 * r.fair_pre:.1f}% over, predicted after {100 * r.fair_pred:.1f}%; value {100 * r.value_pred:+.1f}% (paper only)")
     conn.commit()
-    if len(F):
+    watches = len(st["ff"])
+    if full is not None and box is not None:
+        _measure("trigger", _ff_start, conn, e, st, keys, tids, full, box, date, now, stamp)
+    if len(F) or len(st["ff"]) > watches:
         st["follow"] += [(now + timedelta(minutes=m), m, sorted(set(tids.values()))) for m in FOLLOW_UPS]
 
 
-def _follow_up(conn, e: dict, minutes: int, tids: list, stamp: str):
-    """Is each flagged price still on offer at the same book, line and price?"""
-    from fetch_early_odds import MARKETS
-    Q, _ = _fetch(conn, e["id"], MARKETS, f"follow_{minutes}", stamp, store=True)
-    if Q is None:
+def _ff_start(conn, e: dict, st: dict, keys: dict, tids: dict, full: pd.DataFrame, box: pd.DataFrame, date: str, now: datetime, stamp: str):
+    """Open the fast-book measurement for each pulled key player (teammates, reference quotes) and check the trigger pull."""
+    ref = _ff_reference(st, now)
+    if ref is None:
         return
-    idx = Q.set_index(["player", "prop_type", "book"])
-    F = pd.read_sql(f"select rowid as rid, * from flags where trigger_id in ({','.join('?' * len(tids))})", conn, params=tids)
+    ids = identities(box, date, (e["home"], e["away"]), set(full["player"]) | set(ref["player"]) | set(keys))
+    for key in keys:
+        if key in ids:
+            kpid, kteam = ids[key]
+            mates = {n for n, (pid, team) in ids.items() if team == kteam and pid != kpid}
+            st["ff"].append({"tid": tids[key], "key": key, "mates": mates, "ref": ref, "t0": now, "date": date})
+    _ff_check(conn, e, st, full, now, stamp)
+    _track(conn, e["id"], full, now, stamp)
+
+
+def _still(conn, table: str, minutes: int, tids: list, idx: pd.DataFrame):
+    F = pd.read_sql(f"select rowid as rid, * from {table} where trigger_id in ({','.join('?' * len(tids))})", conn, params=tids)
     for r in F.itertuples(index=False):
         k = (r.player, r.prop_type, r.book)
         if k not in idx.index:
@@ -329,8 +475,22 @@ def _follow_up(conn, e: dict, minutes: int, tids: list, stamp: str):
             now_price, was = (q["over_odds"], r.over_odds) if r.side == "over" else (q["under_odds"], r.under_odds)
             status = ("same" if q["line"] == r.line and now_price == was else
                       f"price {int(now_price):+d}" if q["line"] == r.line else f"line {q['line']:g}")
-        conn.execute(f"update flags set still_{minutes}=? where rowid=?", (status, r.rid))
+        conn.execute(f"update {table} set still_{minutes}=? where rowid=?", (status, r.rid))
     conn.commit()
+
+
+def _follow_up(conn, e: dict, st: dict, minutes: int, tids: list, now: datetime, stamp: str):
+    """Is each flagged price still on offer at the same book, line and price? Also the fast-book measurement on these quotes."""
+    from fetch_early_odds import MARKETS
+    Q, _ = _fetch(conn, e["id"], MARKETS, f"follow_{minutes}", stamp, store=True)
+    if Q is None:
+        return
+    idx = Q.drop_duplicates(["player", "prop_type", "book"]).set_index(["player", "prop_type", "book"])
+    _still(conn, "flags", minutes, tids, idx)
+    if st is not None:
+        _measure(f"follow-up {minutes}", _still, conn, "ff_flags", minutes, tids, idx)
+        _measure(f"follow-up {minutes}", _ff_check, conn, e, st, Q, now, stamp)
+        _measure(f"follow-up {minutes}", _track, conn, e["id"], Q, now, stamp)
 
 
 def _watch(conn, e: dict, st: dict, now: datetime, stamp: str):
@@ -354,6 +514,10 @@ def _watch(conn, e: dict, st: dict, now: datetime, stamp: str):
             st["reappeared"].add(p)
             conn.execute("update triggers set reappeared_at=? where event_id=? and key_player=?", (stamp, e["id"], p))
             conn.commit()
+    if st["ff"]:
+        _measure("poll", _ff_check, conn, e, st, Q, now, stamp)
+    _measure("poll", _track, conn, e["id"], Q, now, stamp)
+    st["pts_hist"] = [(t, p) for t, p in st["pts_hist"] if now - t <= timedelta(minutes=15)] + [(now, pts)]
     st.update(dk=dk, dk_at=stamp, pts=pts)
 
 
@@ -374,15 +538,16 @@ def tick(now: datetime = None):
     watching = [e for e in events if now < e["tip"] - STOP_BEFORE_TIP and e["tip"] - now <= WINDOW]
     for e in watching:
         st = _STATE["ev"].setdefault(e["id"], {"dk": None, "dk_at": None, "pts": None, "base": None, "base_at": None, "base_poll": None,
-                                               "keys_done": set(), "reappeared": set(), "follow": []})
+                                               "keys_done": set(), "reappeared": set(), "follow": [], "pts_hist": [], "ff": []})
         _watch(conn, e, st, now, stamp)
     for e in events:
         st = _STATE["ev"].get(e["id"])
         for due in [f for f in (st["follow"] if st else []) if f[0] <= now]:
             st["follow"].remove(due)
-            _follow_up(conn, e, due[1], due[2], stamp)
-        if e["tip"] - CLOSE_BEFORE_TIP <= now < e["tip"] \
-                and conn.execute("select 1 from flags where event_id=? limit 1", (e["id"],)).fetchone() \
+            _follow_up(conn, e, st, due[1], due[2], now, stamp)
+        flagged = conn.execute("select 1 from flags where event_id=? union all select 1 from ff_flags where event_id=? limit 1",
+                               (e["id"], e["id"])).fetchone()
+        if e["tip"] - CLOSE_BEFORE_TIP <= now < e["tip"] and flagged \
                 and not conn.execute("select 1 from polls where event_id=? and kind='close' limit 1", (e["id"],)).fetchone():
             _fetch(conn, e["id"], MARKETS, "close", stamp, store=True)
     live = {e["id"] for e in events if e["tip"] > now - timedelta(minutes=30)}
@@ -409,17 +574,19 @@ def grade(refresh_box: bool = False):
     conn = _db()
     cutoff = _stamp(datetime.now(timezone.utc) - timedelta(hours=4))
     F = pd.read_sql("select rowid as rid, * from flags where graded_at is null and commence_time < ?", conn, params=(cutoff,))
+    FF = pd.read_sql("select rowid as rid, * from ff_flags where graded_at is null and commence_time < ?", conn, params=(cutoff,))
     T = pd.read_sql("select * from triggers where graded_at is null and commence_time < ?", conn, params=(cutoff,))
-    if F.empty and T.empty:
+    if F.empty and FF.empty and T.empty:
         _say("nothing to grade yet")
         return
     box = load_box()
     games = _games_table(box)
     E = pd.read_sql("select event_id, home_team, away_team, date from triggers", conn)
-    ev = E[E["event_id"].isin(set(F["event_id"]) | set(T["event_id"]))].drop_duplicates("event_id").rename(columns={"date": "et_date"})
+    ev = E[E["event_id"].isin(set(F["event_id"]) | set(FF["event_id"]) | set(T["event_id"]))].drop_duplicates("event_id").rename(columns={"date": "et_date"})
     link = ml._link_events(ev, games)
     graded_at = _stamp(datetime.now(timezone.utc))
-    done_f = done_t = 0
+    done = {"flags": 0, "ff_flags": 0}
+    done_t = 0
     for eid in ev["event_id"]:
         gid = link.get(eid)
         if pd.isna(gid):
@@ -427,30 +594,33 @@ def grade(refresh_box: bool = False):
         day = box[box["game_id"] == int(gid)].drop_duplicates("player_id")
         roster = Roster(zip(day["player_id"], day["player"]))
         stats = day.set_index("player_id")
-        f = F[F["event_id"] == eid]
+        parts = {"flags": F[F["event_id"] == eid], "ff_flags": FF[FF["event_id"] == eid]}
         t = T[T["event_id"] == eid]
-        res = roster.resolve(set(f["player"]) | set(t["key_player"]))
+        res = roster.resolve(set(parts["flags"]["player"]) | set(parts["ff_flags"]["player"]) | set(t["key_player"]))
         played = lambda name: bool(stats["played"].get(res[name][0], False)) if name in res else False  # noqa: E731
         for r in t.itertuples(index=False):
             conn.execute("update triggers set key_played=?, graded_at=? where trigger_id=?", (int(played(r.key_player)), graded_at, r.trigger_id))
             done_t += 1
-        if f.empty:
+        if parts["flags"].empty and parts["ff_flags"].empty:
             continue
         close = pd.read_sql("select q.* from quotes q where q.poll_id = (select max(poll_id) from polls where kind='close' and event_id=?)",
                             conn, params=(eid,))
-        p_close = fair(f[["player", "prop_type", "line", "over_odds", "under_odds"]].assign(book="x"), close, f["date"].iloc[0], eid)[0] \
-            if len(close) else np.full(len(f), np.nan)
-        for r, pc in zip(f.itertuples(index=False), p_close):
-            dec = float(_dec(r.over_odds if r.side == "over" else r.under_odds))
-            value_close = None if np.isnan(pc) else dec * (pc if r.side == "over" else 1 - pc) - 1
-            ok = played(r.player)
-            actual = float(stats.loc[res[r.player][0], PROP_TO_STAT[r.prop_type]].sum()) if ok else None
-            won = None if actual is None else int(actual > r.line if r.side == "over" else actual < r.line)
-            conn.execute("update flags set close_fair=?, value_close=?, actual=?, played=?, won=?, graded_at=? where rowid=?",
-                         (None if np.isnan(pc) else float(pc), value_close, actual, int(ok), won, graded_at, r.rid))
-            done_f += 1
+        for table, f in parts.items():
+            if f.empty:
+                continue
+            p_close = fair(f[["player", "prop_type", "line", "over_odds", "under_odds"]].assign(book="x"), close, f["date"].iloc[0], eid)[0] \
+                if len(close) else np.full(len(f), np.nan)
+            for r, pc in zip(f.itertuples(index=False), p_close):
+                dec = float(_dec(r.over_odds if r.side == "over" else r.under_odds))
+                value_close = None if np.isnan(pc) else dec * (pc if r.side == "over" else 1 - pc) - 1
+                ok = played(r.player)
+                actual = float(stats.loc[res[r.player][0], PROP_TO_STAT[r.prop_type]].sum()) if ok else None
+                won = None if actual is None else int(actual > r.line if r.side == "over" else actual < r.line)
+                conn.execute(f"update {table} set close_fair=?, value_close=?, actual=?, played=?, won=?, graded_at=? where rowid=?",
+                             (None if np.isnan(pc) else float(pc), value_close, actual, int(ok), won, graded_at, r.rid))
+                done[table] += 1
     conn.commit()
-    _say(f"graded {done_t} trigger(s) and {done_f} flag(s)")
+    _say(f"graded {done_t} trigger(s), {done['flags']} flag(s) and {done['ff_flags']} fast-book measurement flag(s)")
 
 
 def _mean_ci(x: pd.Series, cluster: pd.Series) -> str:
@@ -483,6 +653,7 @@ def report():
          f"{int(T['reappeared_at'].notna().sum())} re-posted by DraftKings later")
     if F.empty:
         _say("no flags yet")
+        _report_fast(conn)
         return
     _say(f"flags {len(F)} from {F['trigger_id'].nunique()} trigger(s); predicted value {100 * F['value_pred'].mean():+.1f}%; "
          f"overs {(F['side'] == 'over').mean():.0%}; quote age at the flag median {F['quote_age_min'].median():.1f} min")
@@ -496,9 +667,56 @@ def report():
         s = F[f"still_{m}"].dropna()
         if len(s):
             _say(f"   still on offer at the same price about {m} min later: {(s == 'same').mean():.0%} of {len(s)}")
+    lasting = _lasting(F)
+    if lasting:
+        _say(f"   {lasting}")
     for book, b in F.groupby("book"):
         c = b[b["value_close"].notna()]
         _say(f"      {book:<11} {len(b):>4} flags; value at close {_mean_ci(c['value_close'], c['trigger_id'])}")
+    _report_fast(conn)
+
+
+def _lasting(F: pd.DataFrame) -> str:
+    """From the minute-by-minute points polls: the share of flagged points prices still on offer, unchanged, k minutes after the flag."""
+    P = F[(F["prop_type"] == "points")] if "gone_at" in F.columns else F.iloc[0:0]
+    if P.empty:
+        return ""
+    at = pd.to_datetime(P["flagged_at"], utc=True)
+    gone = (pd.to_datetime(P["gone_at"], utc=True) - at).dt.total_seconds() / 60
+    seen = (pd.to_datetime(P["last_same_at"], utc=True) - at).dt.total_seconds() / 60
+    parts = []
+    for k in (1, 2, 3, 5, 10):
+        known = gone.notna() | (seen >= k)
+        if known.any():
+            still = (gone > k) | (gone.isna() & (seen >= k))
+            parts.append(f"+{k} min {still[known].mean():.0%} of {int(known.sum())}")
+    return "points prices still on offer, minute by minute: " + ", ".join(parts) if parts else ""
+
+
+def _report_fast(conn):
+    from clean_backtest import _dec
+
+    FF = pd.read_sql("select * from ff_flags", conn)
+    _say("fast-book rule (MEASUREMENT ONLY; did not pass its test, audit section 8m):")
+    if FF.empty:
+        _say("   no fast-book flags yet")
+        return
+    _say(f"   flags {len(FF)} from {FF['trigger_id'].nunique()} trigger(s); value against the movers' price {100 * FF['value_ff'].mean():+.1f}%; "
+         f"overs {(FF['side'] == 'over').mean():.0%}; minutes after the pull median {FF['mins_after'].median():.0f}; "
+         f"quote age median {FF['quote_age_min'].median():.1f} min")
+    C = FF[FF["value_close"].notna()]
+    _say(f"   value against the closing fair price: {_mean_ci(C['value_close'], C['trigger_id'])}")
+    R = FF[FF["won"].notna()].copy()
+    if len(R):
+        R["pnl"] = np.where(R["won"] == 1, _dec(np.where(R["side"] == "over", R["over_odds"], R["under_odds"])) - 1, -1.0)
+        _say(f"   realised return per bet (voids excluded): {_mean_ci(R['pnl'], R['trigger_id'])}")
+    for m in FOLLOW_UPS:
+        s = FF[f"still_{m}"].dropna()
+        if len(s):
+            _say(f"   still on offer at the same price at the {m}-minute follow-up: {(s == 'same').mean():.0%} of {len(s)}")
+    lasting = _lasting(FF)
+    if lasting:
+        _say(f"   {lasting}")
 
 
 def recent(n: int = 50) -> dict:
@@ -507,8 +725,13 @@ def recent(n: int = 50) -> dict:
     T = pd.read_sql("select trigger_id, date, trigger_at, home_team, away_team, key_player, key_line, stale_quotes, flags, note, reappeared_at, "
                     "key_played from triggers order by trigger_at desc limit ?", conn, params=(n,))
     F = pd.read_sql("select flagged_at, player, prop_type, side, book, line, over_odds, under_odds, fair_pre, fair_pred, value_pred, still_2, "
-                    "still_5, value_close, actual, played, won, key_player from flags order by flagged_at desc limit ?", conn, params=(n,))
-    return {"triggers": json.loads(T.to_json(orient="records")), "flags": json.loads(F.to_json(orient="records"))}
+                    "still_5, still_10, gone_at, value_close, actual, played, won, key_player from flags order by flagged_at desc limit ?",
+                    conn, params=(n,))
+    FF = pd.read_sql("select flagged_at, mins_after, player, prop_type, side, book, line, over_odds, under_odds, n_movers, movers, fair_ff, "
+                     "value_ff, still_2, still_5, still_10, gone_at, value_close, actual, played, won, key_player from ff_flags "
+                     "order by flagged_at desc limit ?", conn, params=(n,))
+    return {"triggers": json.loads(T.to_json(orient="records")), "flags": json.loads(F.to_json(orient="records")),
+            "fast_book_measurement_flags": json.loads(FF.to_json(orient="records"))}
 
 
 def scheduled(cmd: str) -> str:
@@ -550,6 +773,24 @@ def replay():
     model = tm.load_predictor(MODEL_FILE, META_FILE)
     team_name = dict(zip(box["team_id"], box["team"]))
     rng = np.random.default_rng(19)
+    sig = _sig()
+
+    def scored(F):
+        F = F[F["fair_post"].notna()].copy()
+        F["dec"] = np.where(F["side"] == "over", _dec(F["over_odds"]), _dec(F["under_odds"]))
+        F["value"] = F["dec"] * np.where(F["side"] == "over", F["fair_post"], 1 - F["fair_post"]) - 1
+        F["played"], F["won"] = False, False
+        for gid, g in F.groupby("game_id"):
+            day = box[box["game_id"] == gid].drop_duplicates("player_id")
+            res = Roster(zip(day["player_id"], day["player"])).resolve(set(g["player"]))
+            stats = day.set_index("player_id")
+            for i, r in g.iterrows():
+                pid = res.get(r["player"], (None,))[0]
+                if pid is not None and bool(stats["played"].get(pid, False)):
+                    actual = float(stats.loc[pid, PROP_TO_STAT[r["prop_type"]]].sum())
+                    F.at[i, "played"], F.at[i, "won"] = True, (actual > r["line"]) if r["side"] == "over" else (actual < r["line"])
+        return F
+
     for label, events_file, db_file, keep in [("pilot 2025-26", nl.EVENTS_FILE, nl.DB, lambda e: True),
                                               ("late scratches 2025-26 (sample B)", nc.EVENTS_FILE, nc.DB, lambda e: e.get("sample", "").startswith("B"))]:
         events = [e for e in json.loads(events_file.read_text()) if keep(e)]
@@ -558,7 +799,7 @@ def replay():
         conn.close()
         R["prop_type"] = R["market"].map(MARKET_TO_PROP)
         R = R[R["prop_type"].notna() & (R["over_odds"].abs() >= 100) & (R["under_odds"].abs() >= 100)].assign(last_update=None)
-        out, trig = [], []
+        out, trig, ff_out = [], [], []
         for e in events:
             G = R[R["event_id"] == e["event_id"]]
             day = box[box["game_id"] == e["game_id"]]
@@ -583,35 +824,60 @@ def replay():
                     back = {p: any(((L["book"] == "draftkings") & (L["prop_type"] == "points") & (L["player"] == p)).any() for L in later) for p in gone}
                     trig.extend(back.values())
                     _, F = compute_flags(e["event_id"], date, teams, gone, Q, base, box, model, pd.Timestamp(s).to_pydatetime())
+                    post = at[snaps[-1]]
                     if len(F):
-                        post = at[snaps[-1]]
                         F["fair_post"] = fair(F, post, date, e["event_id"])[0]
                         F["game_id"], F["reposted"] = e["game_id"], F["key_player"].map(back)
                         out.append(F)
+                    # fast-book measurement: reference = the snapshot before the trigger; checks for 30 minutes
+                    i = snaps.index(s)
+                    ref = at[snaps[i - 1]]
+                    ids = identities(box, date, teams, set(Q["player"]) | set(ref["player"]) | set(gone))
+                    found = []
+                    for key in [k for k in gone if k in ids]:
+                        kpid, kteam = ids[key]
+                        mates = {n for n, (pid, team) in ids.items() if team == kteam and pid != kpid}
+                        for j in range(i, len(snaps)):
+                            mins = (pd.Timestamp(snaps[j]) - pd.Timestamp(s)).total_seconds() / 60
+                            if mins > FF_HORIZON.total_seconds() / 60:
+                                break
+                            Fj = fast_flags(at[snaps[j]], ref, mates, sig)
+                            if Fj.empty:
+                                continue
+                            if j + 1 < len(snaps) and pd.Timestamp(snaps[j + 1]) - pd.Timestamp(snaps[j]) == pd.Timedelta(minutes=5):
+                                nxt = at[snaps[j + 1]][["player", "prop_type", "book", "line", "over_odds", "under_odds"]]
+                                Fj = Fj.merge(nxt, on=["player", "prop_type", "book"], how="left", suffixes=("", "_n"))
+                                Fj["still_5"] = ((Fj["line_n"] == Fj["line"]) & (Fj["over_odds_n"] == Fj["over_odds"])
+                                                 & (Fj["under_odds_n"] == Fj["under_odds"])).astype(float)
+                            else:
+                                Fj["still_5"] = np.nan
+                            found.append(Fj.assign(mins=mins, t=snaps[j], key_player=key, reposted=back[key]))
+                    if found:
+                        G2 = pd.concat(found, ignore_index=True).sort_values(["t", "value_ff"], ascending=[True, False])
+                        G2 = G2.drop_duplicates(["player", "prop_type", "side"]).reset_index(drop=True)
+                        G2["fair_post"], G2["game_id"] = fair(G2, post, date, e["event_id"])[0], e["game_id"]
+                        ff_out.append(G2)
                 dk_prev = dk
-        F = pd.concat(out, ignore_index=True) if out else pd.DataFrame()
         print(f"\n{label}: {len(events)} windows, {len(trig)} triggers, of which DraftKings re-posted the player later in the window: {sum(trig)}")
+        F = pd.concat(out, ignore_index=True) if out else pd.DataFrame()
         if F.empty:
             print("   no flags")
+        else:
+            F = scored(F)
+            print(f"   flagged at predicted value 3%+   {nc.fmt(nc.score(F, rng))}")
+            for lab, sub in [("player stayed pulled", F[~F["reposted"]]), ("player re-posted later", F[F["reposted"]])]:
+                print(f"      {lab:<28} {nc.fmt(nc.score(sub, rng))}")
+            print(f"   by prop: " + ", ".join(f"{p} {len(g)} ({100 * g['value'].mean():+.1f}%)" for p, g in F.groupby("prop_type")))
+            print(f"   by book: " + ", ".join(f"{b} {len(g)} ({100 * g['value'].mean():+.1f}%)" for b, g in F.groupby("book")))
+        FF = pd.concat(ff_out, ignore_index=True) if ff_out else pd.DataFrame()
+        if FF.empty:
+            print("   fast-book measurement: no flags")
             continue
-        F = F[F["fair_post"].notna()].copy()
-        F["dec"] = np.where(F["side"] == "over", _dec(F["over_odds"]), _dec(F["under_odds"]))
-        F["value"] = F["dec"] * np.where(F["side"] == "over", F["fair_post"], 1 - F["fair_post"]) - 1
-        F["played"], F["won"] = False, False
-        for gid, g in F.groupby("game_id"):
-            day = box[box["game_id"] == gid].drop_duplicates("player_id")
-            res = Roster(zip(day["player_id"], day["player"])).resolve(set(g["player"]))
-            stats = day.set_index("player_id")
-            for i, r in g.iterrows():
-                pid = res.get(r["player"], (None,))[0]
-                if pid is not None and bool(stats["played"].get(pid, False)):
-                    actual = float(stats.loc[pid, PROP_TO_STAT[r["prop_type"]]].sum())
-                    F.at[i, "played"], F.at[i, "won"] = True, (actual > r["line"]) if r["side"] == "over" else (actual < r["line"])
-        print(f"   flagged at predicted value 3%+   {nc.fmt(nc.score(F, rng))}")
-        for lab, sub in [("player stayed pulled", F[~F["reposted"]]), ("player re-posted later", F[F["reposted"]])]:
-            print(f"      {lab:<28} {nc.fmt(nc.score(sub, rng))}")
-        print(f"   by prop: " + ", ".join(f"{p} {len(g)} ({100 * g['value'].mean():+.1f}%)" for p, g in F.groupby("prop_type")))
-        print(f"   by book: " + ", ".join(f"{b} {len(g)} ({100 * g['value'].mean():+.1f}%)" for b, g in F.groupby("book")))
+        FF = scored(FF.drop_duplicates(["game_id", "player", "prop_type", "side"]))
+        st5 = FF["still_5"].dropna()
+        print(f"   fast-book measurement (2+ movers, 3%+)  {nc.fmt(nc.score(FF, rng))}")
+        print(f"      still offered 5 minutes later {st5.mean():.0%} of {len(st5)}; at the pull itself {int((FF['mins'] == 0).sum())} flags; "
+              f"model flags at the same teammate, prop and side {int(FF.merge(F[['game_id', 'player', 'prop_type', 'side']], how='inner').shape[0]) if len(F) else 0}")
 
 
 if __name__ == "__main__":
