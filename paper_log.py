@@ -221,6 +221,14 @@ def report():
                       ("each night's top 30 by value", G.sort_values("ev", ascending=False).groupby("date").head(30)),
                       ("each night's top 40 by value", G.sort_values("ev", ascending=False).groupby("date").head(40))]:
         _say(f"   {name:<40} {ml.fmt(ml.roi(sub))}")
+    # Each graded night on its own (added 2026-11-15 so the logged report shows the latest night; the rule is unchanged).
+    _say("   by game night (last 7 graded):")
+    for d in sorted(G["date"].unique())[-7:]:
+        g = G[G["date"] == d]
+        c = g[g["close_under_odds"].notna()]
+        move = f"{((_dec(c['under_odds']) / _dec(c['close_under_odds']) - 1) * 100).mean():+.2f}% on {len(c)}" if len(c) else "none"
+        _say(f"      {d}  {int((F['date'] == d).sum()):>4} flags, void {int((F.loc[F['date'] == d, 'played'] == 0).sum())}; all {ml.fmt(ml.roi(g))}; "
+             f"4%+ {ml.fmt(ml.roi(g[g['ev'] >= 0.04]))}; first seen vs last price {move}")
 
 
 def recent_flags(n: int = 50) -> list:

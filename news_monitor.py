@@ -31,6 +31,16 @@ such prices last.
 Every flagged price of either rule is then re-checked at each later poll for an hour (points every minute), recording
 when it was last seen unchanged and when it first was not.
 
+Strict trigger: MEASUREMENT ONLY (outputs/clean/feature_lab/protocol_strict_trigger.json, from 2026-11-15), recorded on the
+trigger and flag rows; it never changes the rule above and uses no extra credits. In the first two live nights only 4 of 16
+pulled players sat out (75-100% in the tests): the live trigger also fires when DraftKings briefly takes players down.
+  confirmed    at the pull, or at the first minute poll 2 minutes or more after it, another book that had quoted the player's
+               points no longer does (while quoting 3+ other players' points); or at that 2-minute poll DraftKings has still
+               not re-posted him
+  kept flag    from a confirmed trigger, on a player DraftKings still quotes (never one it has pulled too), and still on offer
+               when the trigger was confirmed: at its own price if another book was already off at the pull, otherwise only if
+               the 2-minute follow-up showed the same line and price
+
 Polling, for games tipping within 3 hours (the events list is free):
   every minute            player_points at the ten books: 1 credit a game
   every 30 minutes        all five markets at the ten books, 5 credits a game: the baseline for the stale test and the
@@ -81,6 +91,9 @@ FF_MIN_MOVERS = 2
 FF_HORIZON = timedelta(minutes=30)
 FF_REF_LAG = timedelta(minutes=4, seconds=30)  # the minute poll about 5 minutes before the trigger (the tests' snapshot spacing)
 TRACK_FOR = timedelta(minutes=60)
+CHECK_AFTER = timedelta(minutes=2)  # strict trigger: the first minute poll this long after the pull (the 2-minute follow-up's tick)
+STRICT_LABEL = {"book_at_pull": "another book off at the pull", "book_by_2": "another book off by 2 min",
+                "dk_still_off_2": "still off DraftKings at 2 min", "no": "not confirmed"}
 EVENTS_EVERY = timedelta(minutes=10)
 HEARTBEAT = timedelta(minutes=30)
 DAILY_CAP = int(os.environ.get("NEWS_MONITOR_DAILY_CAP", "4000"))
@@ -125,10 +138,14 @@ def _db() -> sqlite3.Connection:
             still_2 text, still_5 text, still_10 text, last_same_at text, gone_at text, close_fair real, value_close real,
             actual real, played integer, won integer, graded_at text, primary key (event_id, player, prop_type, side));
     """)
-    have = {r[1] for r in conn.execute("pragma table_info(flags)")}
-    for col in ("still_10", "last_same_at", "gone_at"):  # measurement columns added 2026-11-13; the rule is unchanged
-        if col not in have:
-            conn.execute(f"alter table flags add column {col} text")
+    # Measurement columns, added to older databases (2026-11-13: price timing; 2026-11-15: strict trigger). The rule is unchanged.
+    for table, cols in (("flags", ("still_10 text", "last_same_at text", "gone_at text", "mate_pulled integer")),
+                        ("ff_flags", ("mate_pulled integer",)),
+                        ("triggers", ("books_off_t0 text", "check_at text", "dk_back_2 integer", "books_off_2 text", "strict text"))):
+        have = {r[1] for r in conn.execute(f"pragma table_info({table})")}
+        for col in cols:
+            if col.split()[0] not in have:
+                conn.execute(f"alter table {table} add column {col}")
     conn.commit()
     return conn
 
@@ -350,23 +367,25 @@ def _ff_reference(st: dict, now: datetime):
 
 def _ff_check(conn, e: dict, st: dict, Q: pd.DataFrame, now: datetime, stamp: str):
     """Fast-book flags (measurement only) for each trigger on this game still inside its 30 minutes, from the markets in Q."""
+    pulled = _dk_pulled(_had_points(st), Q)
     for w in [w for w in st.get("ff", []) if now - w["t0"] <= FF_HORIZON]:
         ref = w["ref"][w["ref"]["prop_type"].isin(set(Q["prop_type"]))]
         F = fast_flags(Q, ref, w["mates"], _sig())
         mins = (now - w["t0"]).total_seconds() / 60
         for r in F.itertuples(index=False):
             age = (pd.Timestamp(now) - pd.Timestamp(r.last_update)).total_seconds() / 60 if isinstance(r.last_update, str) else None
+            mate_pulled = None if pulled is None else int(r.player in pulled)
             cur = conn.execute("insert or ignore into ff_flags (event_id, trigger_id, key_player, player, prop_type, side, book, line, "
                                "over_odds, under_odds, fair_ff, value_ff, n_movers, movers, quote_age_min, flagged_at, mins_after, "
-                               "commence_time, date) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               "commence_time, date, mate_pulled) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                (e["id"], w["tid"], w["key"], r.player, r.prop_type, r.side, r.book, float(r.line), int(r.over_odds),
                                 int(r.under_odds), float(r.fair_ff), float(r.value_ff), int(r.n_movers), r.movers, age, stamp, mins,
-                                e["commence_time"], w["date"]))
+                                e["commence_time"], w["date"], mate_pulled))
             if cur.rowcount:
                 price = r.over_odds if r.side == "over" else r.under_odds
                 _say(f"FAST    {r.player} {r.prop_type} {r.side} {r.line:g} {price:+d} at {r.book}, {mins:.0f} min after the pull: "
                      f"{r.n_movers} books moved ({r.movers}), their fair {100 * r.fair_ff:.1f}% over; value {100 * r.value_ff:+.1f}% "
-                     f"(measurement only, paper)")
+                     f"(measurement only, paper)" + (" [he is off DraftKings too]" if mate_pulled else ""))
     conn.commit()
 
 
@@ -391,17 +410,77 @@ def _track(conn, event_id: str, Q: pd.DataFrame, now: datetime, stamp: str):
     conn.commit()
 
 
-def _measure(what: str, fn, *args):
-    """Run a measurement step; an error there is reported and never stops the frozen rule."""
+def _measure(what: str, fn, *args, default=None):
+    """Run a measurement step; an error there is reported and never stops the frozen rule. Returns fn's result, or default."""
     try:
-        fn(*args)
+        return fn(*args)
     except Exception as ex:  # noqa: BLE001
-        _say(f"fast-book/tracking measurement error ({what}): {type(ex).__name__}: {ex}")
+        _say(f"measurement error ({what}): {type(ex).__name__}: {ex}")
+        return default
 
 
-def _trigger(conn, e: dict, st: dict, keys: dict, now: datetime, stamp: str, full=None, poll_id=None):
+def _had_points(st: dict) -> pd.DataFrame:
+    """Points quotes from before this poll: the baseline's and the minute polls' of the last 15 minutes."""
+    parts = [p for _, p in st.get("pts_hist") or []]
+    if st.get("base") is not None:
+        parts.append(st["base"][st["base"]["prop_type"] == "points"])
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=COLS)
+
+
+def _dk_pulled(had: pd.DataFrame, Q: pd.DataFrame):
+    """Players DraftKings quoted for points before (had) and does not quote in Q. None when Q holds no DraftKings points board
+    (3+ players), since then nothing can be said."""
+    now = set(Q.loc[(Q["book"] == "draftkings") & (Q["prop_type"] == "points"), "player"])
+    if len(now) < MIN_OTHERS:
+        return None
+    return set(had.loc[(had["book"] == "draftkings") & (had["prop_type"] == "points"), "player"]) - now
+
+
+def _off_books(key: str, had: pd.DataFrame, Q: pd.DataFrame) -> list:
+    """Books other than DraftKings that quoted the key player's points before (had) and in Q quote 3+ other players' points
+    but not his."""
+    before = set(had.loc[(had["player"] == key) & (had["prop_type"] == "points") & (had["book"] != "draftkings"), "book"])
+    pts = Q[Q["prop_type"] == "points"]
+    out = []
+    for book in sorted(before):
+        names = set(pts.loc[pts["book"] == book, "player"])
+        if key not in names and len(names) >= MIN_OTHERS:
+            out.append(book)
+    return out
+
+
+def _strict_label(off0, off2: list, back: bool) -> str:
+    return "book_at_pull" if off0 else "book_by_2" if off2 else "no" if back else "dk_still_off_2"
+
+
+def _strict_check(conn, e: dict, st: dict, pts: pd.DataFrame, dk: dict, now: datetime, stamp: str):
+    """Strict trigger (measurement only): at the first minute poll 2 minutes or more after each trigger, has DraftKings re-posted
+    the key player at any poll since, and which other books have stopped quoting him? Records the result on the trigger row."""
+    from fetch_early_odds import ET
+
+    if len(dk) < MIN_OTHERS:
+        return  # no DraftKings points board in this poll: wait for the next one
+    had = _had_points(st)
+    for c in [c for c in st["checks"] if now - c["t0"] >= CHECK_AFTER]:
+        st["checks"].remove(c)
+        back = c["key"] in st["reappeared"] or c["key"] in dk
+        off2 = _off_books(c["key"], had, pts)
+        strict = _strict_label(c["off0"], off2, back)
+        conn.execute("update triggers set check_at=?, dk_back_2=?, books_off_2=?, strict=? where trigger_id=?",
+                     (stamp, int(back), ",".join(off2), strict, c["tid"]))
+        _say(f"CHECK   {now.astimezone(ET):%H:%M} ET  {e['away']} @ {e['home']}: {c['key']} {'back on' if back else 'still off'} DraftKings "
+             f"{(now - c['t0']).total_seconds() / 60:.0f} min after the pull; off at {len(off2)} other book(s)"
+             + (f" ({', '.join(off2)})" if off2 else "")
+             + (" -> strict trigger NOT confirmed" if strict == "no" else f" -> strict trigger confirmed: {STRICT_LABEL[strict]}")
+             + " (measurement only)")
+    conn.commit()
+
+
+def _trigger(conn, e: dict, st: dict, keys: dict, now: datetime, stamp: str, full=None, poll_id=None, pts_now=None):
     from fetch_early_odds import ET, MARKETS
 
+    had = _had_points(st)  # before this poll: for the strict-trigger measurement only
+    off0 = {k: (_measure("strict trigger", _off_books, k, had, pts_now) if pts_now is not None else None) for k in keys}
     if full is None:
         full, poll_id = _fetch(conn, e["id"], MARKETS, "trigger", stamp, store=True)
     else:  # the baseline pull itself showed the pull: keep it as the trigger quotes
@@ -425,22 +504,29 @@ def _trigger(conn, e: dict, st: dict, keys: dict, now: datetime, stamp: str, ful
     for key, line in keys.items():
         n = notes[key]
         conn.execute("insert or ignore into triggers (event_id, date, home_team, away_team, commence_time, key_player, key_line, dk_last_seen, "
-                     "trigger_at, baseline_at, note, teammate_quotes, stale_quotes, flags) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     "trigger_at, baseline_at, note, teammate_quotes, stale_quotes, flags, books_off_t0) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (e["id"], date, e["home"], e["away"], e["commence_time"], key, float(line), st["dk_at"], stamp,
-                      _stamp(st["base_at"]) if st["base_at"] else None, n["note"], n["teammate_quotes"], n["stale_quotes"], n["flags"]))
+                      _stamp(st["base_at"]) if st["base_at"] else None, n["note"], n["teammate_quotes"], n["stale_quotes"], n["flags"],
+                      None if off0[key] is None else ",".join(off0[key])))
         tids[key] = conn.execute("select trigger_id from triggers where event_id=? and key_player=?", (e["id"], key)).fetchone()[0]
         _say(f"TRIGGER {now.astimezone(ET):%H:%M} ET  {e['away']} @ {e['home']}: DraftKings pulled {key} (points {line:g}); "
              f"{n['teammate_quotes']} teammate quotes at the six books, {n['stale_quotes']} still at the baseline price, {n['flags']} flagged"
-             + (f" [{n['note']}]" if n["note"] else ""))
+             + (f" [{n['note']}]" if n["note"] else "")
+             + f"; other books off at the pull: {'unknown' if off0[key] is None else ', '.join(off0[key]) or 'none'}")
+        st.setdefault("checks", []).append({"tid": tids[key], "key": key, "t0": now, "off0": off0[key]})
+    pulled = _measure("strict trigger", _dk_pulled, had, full) if len(F) else None
     for r in F.itertuples(index=False):
         price = r.over_odds if r.side == "over" else r.under_odds
+        mate_pulled = None if pulled is None else int(r.player in pulled)
         conn.execute("insert or ignore into flags (event_id, trigger_id, key_player, player, prop_type, side, book, line, over_odds, under_odds, "
-                     "fair_pre, shift, fair_pred, value_pred, quote_age_min, flagged_at, commence_time, date) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     "fair_pre, shift, fair_pred, value_pred, quote_age_min, flagged_at, commence_time, date, mate_pulled) "
+                     "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (e["id"], tids[r.key_player], r.key_player, r.player, r.prop_type, r.side, r.book, float(r.line), int(r.over_odds),
                       int(r.under_odds), float(r.fair_pre), float(r.shift), float(r.fair_pred), float(r.value_pred),
-                      None if pd.isna(r.quote_age_min) else float(r.quote_age_min), stamp, e["commence_time"], date))
+                      None if pd.isna(r.quote_age_min) else float(r.quote_age_min), stamp, e["commence_time"], date, mate_pulled))
         _say(f"FLAG    {r.player} {r.prop_type} {r.side} {r.line:g} {price:+d} at {r.book}: fair before the news "
-             f"{100 * r.fair_pre:.1f}% over, predicted after {100 * r.fair_pred:.1f}%; value {100 * r.value_pred:+.1f}% (paper only)")
+             f"{100 * r.fair_pre:.1f}% over, predicted after {100 * r.fair_pred:.1f}%; value {100 * r.value_pred:+.1f}% (paper only)"
+             + (" [he is off DraftKings too]" if mate_pulled else ""))
     conn.commit()
     watches = len(st["ff"])
     if full is not None and box is not None:
@@ -508,12 +594,14 @@ def _watch(conn, e: dict, st: dict, now: datetime, stamp: str):
         st.update(base=Q, base_at=now, base_poll=poll_id)
     if gone:
         st["keys_done"].update(gone)
-        _trigger(conn, e, st, gone, now, stamp, full=Q if refresh else None, poll_id=poll_id if refresh else None)
+        _trigger(conn, e, st, gone, now, stamp, full=Q if refresh else None, poll_id=poll_id if refresh else None, pts_now=pts)
     for p in st["keys_done"] - st["reappeared"] - set(gone):
         if p in dk:
             st["reappeared"].add(p)
             conn.execute("update triggers set reappeared_at=? where event_id=? and key_player=?", (stamp, e["id"], p))
             conn.commit()
+    if st.get("checks"):
+        _measure("strict check", _strict_check, conn, e, st, pts, dk, now, stamp)
     if st["ff"]:
         _measure("poll", _ff_check, conn, e, st, Q, now, stamp)
     _measure("poll", _track, conn, e["id"], Q, now, stamp)
@@ -538,7 +626,8 @@ def tick(now: datetime = None):
     watching = [e for e in events if now < e["tip"] - STOP_BEFORE_TIP and e["tip"] - now <= WINDOW]
     for e in watching:
         st = _STATE["ev"].setdefault(e["id"], {"dk": None, "dk_at": None, "pts": None, "base": None, "base_at": None, "base_poll": None,
-                                               "keys_done": set(), "reappeared": set(), "follow": [], "pts_hist": [], "ff": []})
+                                               "keys_done": set(), "reappeared": set(), "follow": [], "pts_hist": [], "ff": [],
+                                               "checks": []})
         _watch(conn, e, st, now, stamp)
     for e in events:
         st = _STATE["ev"].get(e["id"])
@@ -634,8 +723,6 @@ def _mean_ci(x: pd.Series, cluster: pd.Series) -> str:
 
 
 def report():
-    from clean_backtest import _dec
-
     conn = _db()
     P = pd.read_sql("select kind, count(*) n, coalesce(sum(credits), 0) c, min(polled_at) a, max(polled_at) b from polls group by kind", conn)
     T = pd.read_sql("select * from triggers", conn)
@@ -653,27 +740,52 @@ def report():
          f"{int(T['reappeared_at'].notna().sum())} re-posted by DraftKings later")
     if F.empty:
         _say("no flags yet")
-        _report_fast(conn)
-        return
-    _say(f"flags {len(F)} from {F['trigger_id'].nunique()} trigger(s); predicted value {100 * F['value_pred'].mean():+.1f}%; "
-         f"overs {(F['side'] == 'over').mean():.0%}; quote age at the flag median {F['quote_age_min'].median():.1f} min")
-    C = F[F["value_close"].notna()]
-    _say(f"   value against the closing fair price: {_mean_ci(C['value_close'], C['trigger_id'])}")
-    R = F[F["won"].notna()].copy()
-    if len(R):
-        R["pnl"] = np.where(R["won"] == 1, _dec(np.where(R["side"] == "over", R["over_odds"], R["under_odds"])) - 1, -1.0)
-        _say(f"   realised return per bet (voids excluded): {_mean_ci(R['pnl'], R['trigger_id'])}")
-    for m in FOLLOW_UPS:
-        s = F[f"still_{m}"].dropna()
-        if len(s):
-            _say(f"   still on offer at the same price about {m} min later: {(s == 'same').mean():.0%} of {len(s)}")
-    lasting = _lasting(F)
-    if lasting:
-        _say(f"   {lasting}")
-    for book, b in F.groupby("book"):
-        c = b[b["value_close"].notna()]
-        _say(f"      {book:<11} {len(b):>4} flags; value at close {_mean_ci(c['value_close'], c['trigger_id'])}")
+    else:
+        _say(f"flags {len(F)} from {F['trigger_id'].nunique()} trigger(s); predicted value {100 * F['value_pred'].mean():+.1f}%; "
+             f"overs {(F['side'] == 'over').mean():.0%}; quote age at the flag median {F['quote_age_min'].median():.1f} min")
+        C = F[F["value_close"].notna()]
+        _say(f"   value against the closing fair price: {_mean_ci(C['value_close'], C['trigger_id'])}")
+        R = F[F["won"].notna()]
+        if len(R):
+            _say(f"   realised return per bet (voids excluded): {_mean_ci(_pnl(R), R['trigger_id'])}")
+        for m in FOLLOW_UPS:
+            s = F[f"still_{m}"].dropna()
+            if len(s):
+                _say(f"   still on offer at the same price about {m} min later: {(s == 'same').mean():.0%} of {len(s)}")
+        lasting = _lasting(F)
+        if lasting:
+            _say(f"   {lasting}")
+        for book, b in F.groupby("book"):
+            c = b[b["value_close"].notna()]
+            _say(f"      {book:<11} {len(b):>4} flags; value at close {_mean_ci(c['value_close'], c['trigger_id'])}")
+        _report_nights(T, F)
     _report_fast(conn)
+    _report_strict(conn, T)
+
+
+def _pnl(R: pd.DataFrame) -> pd.Series:
+    """Profit per 1-unit bet on graded rows (won 1 or 0)."""
+    from clean_backtest import _dec
+    return pd.Series(np.where(R["won"] == 1, _dec(np.where(R["side"] == "over", R["over_odds"], R["under_odds"])) - 1, -1.0), index=R.index)
+
+
+def _record(R: pd.DataFrame) -> str:
+    if R.empty:
+        return "no graded bets"
+    p = _pnl(R)
+    return f"{int((R['won'] == 1).sum())}-{int((R['won'] == 0).sum())}, {p.sum():+.2f} units ({100 * p.mean():+.1f}% a bet)"
+
+
+def _report_nights(T: pd.DataFrame, F: pd.DataFrame, last: int = 7):
+    """Each recent game night: triggers, how many pulled players sat out, model flags and their results (1 unit a bet)."""
+    _say(f"   by game night (last {last}; model flags, 1 unit a bet):")
+    for d in sorted(set(T["date"].dropna()) | set(F["date"].dropna()))[-last:]:
+        t, f = T[T["date"] == d], F[F["date"] == d]
+        g = t[t["key_played"].notna()]
+        c = f["value_close"].dropna()
+        _say(f"      {d}  triggers {len(t)}, pulled player sat out {int((g['key_played'] == 0).sum())} of {len(g)} graded; flags {len(f)} "
+             f"(void {int((f['played'] == 0).sum())}): {_record(f[f['won'].notna()])}; "
+             f"value at close {f'{100 * c.mean():+.1f}% on {len(c)}' if len(c) else 'none'}")
 
 
 def _lasting(F: pd.DataFrame) -> str:
@@ -694,8 +806,6 @@ def _lasting(F: pd.DataFrame) -> str:
 
 
 def _report_fast(conn):
-    from clean_backtest import _dec
-
     FF = pd.read_sql("select * from ff_flags", conn)
     _say("fast-book rule (MEASUREMENT ONLY; did not pass its test, audit section 8m):")
     if FF.empty:
@@ -706,10 +816,9 @@ def _report_fast(conn):
          f"quote age median {FF['quote_age_min'].median():.1f} min")
     C = FF[FF["value_close"].notna()]
     _say(f"   value against the closing fair price: {_mean_ci(C['value_close'], C['trigger_id'])}")
-    R = FF[FF["won"].notna()].copy()
+    R = FF[FF["won"].notna()]
     if len(R):
-        R["pnl"] = np.where(R["won"] == 1, _dec(np.where(R["side"] == "over", R["over_odds"], R["under_odds"])) - 1, -1.0)
-        _say(f"   realised return per bet (voids excluded): {_mean_ci(R['pnl'], R['trigger_id'])}")
+        _say(f"   realised return per bet (voids excluded): {_mean_ci(_pnl(R), R['trigger_id'])}")
     for m in FOLLOW_UPS:
         s = FF[f"still_{m}"].dropna()
         if len(s):
@@ -719,16 +828,62 @@ def _report_fast(conn):
         _say(f"   {lasting}")
 
 
+def _strict_keep(F: pd.DataFrame, T: pd.DataFrame, table: str) -> pd.DataFrame:
+    """Flags the strict trigger keeps: a confirmed trigger; a player DraftKings still quotes; the price still on offer when the
+    trigger was confirmed (at the pull if another book was already off, otherwise the 2-minute follow-up showed the same line
+    and price; a fast-book flag made at or after the check also counts)."""
+    m = F.merge(T[["trigger_id", "strict", "check_at"]], on="trigger_id", how="left")
+    ok = m["strict"].isin([k for k in STRICT_LABEL if k != "no"]) & (m["mate_pulled"].fillna(0) != 1)
+    on_offer = (m["strict"] == "book_at_pull") | (m["still_2"] == "same")
+    if table == "ff_flags":
+        on_offer = on_offer | (m["flagged_at"].fillna("") >= m["check_at"].fillna("~"))
+    return m[ok & on_offer]
+
+
+def _report_strict(conn, T: pd.DataFrame):
+    _say("strict trigger (MEASUREMENT ONLY from 2026-11-15; the rule above is unchanged; protocol_strict_trigger.json):")
+    C = T[T["check_at"].notna()] if len(T) else T
+    if C.empty:
+        _say(f"   no checked triggers yet ({len(T)} older or unchecked)")
+        return
+    conf = C["strict"] != "no"
+    _say(f"   triggers checked {len(C)}: confirmed {int(conf.sum())} ("
+         + ", ".join(f"{STRICT_LABEL[k]} {int((C['strict'] == k).sum())}" for k in STRICT_LABEL if k != "no")
+         + f"); not confirmed {int((~conf).sum())}; not checked {len(T) - len(C)}")
+    parts = []
+    for lab, sub in [("confirmed", C[conf]), ("not confirmed", C[~conf])] + [(STRICT_LABEL[k], C[C["strict"] == k]) for k in STRICT_LABEL if k != "no"]:
+        g = sub[sub["key_played"].notna()]
+        parts.append(f"{lab} {int((g['key_played'] == 0).sum())} of {len(g)}")
+    _say("   pulled player sat out (graded): " + "; ".join(parts))
+    for table, label in (("flags", "model flags"), ("ff_flags", "fast-book flags (measurement only)")):
+        F = pd.read_sql(f"select * from {table}", conn)
+        F = F[F["trigger_id"].isin(set(C["trigger_id"]))]
+        if F.empty:
+            _say(f"   {label}: none from checked triggers")
+            continue
+        K = _strict_keep(F, C, table)
+        m = F.merge(C[["trigger_id", "strict"]], on="trigger_id")
+        unconf = m["strict"] == "no"
+        mate = ~unconf & (m["mate_pulled"] == 1)
+        _say(f"   {label}: kept {len(K)} of {len(F)} from checked triggers; dropped: trigger not confirmed {int(unconf.sum())}, "
+             f"on a player DraftKings had pulled {int(mate.sum())}, price gone by the confirmation {len(F) - len(K) - int(unconf.sum()) - int(mate.sum())}")
+        for lab, sub in (("kept", K), (f"all {len(F)}", F)):
+            c = sub[sub["value_close"].notna()]
+            _say(f"      {lab:<8} value against the closing fair price {_mean_ci(c['value_close'], c['trigger_id'])}; "
+                 f"results {_record(sub[sub['won'].notna()])}")
+
+
 def recent(n: int = 50) -> dict:
     """The latest triggers and flags, newest first, for the web app."""
     conn = _db()
     T = pd.read_sql("select trigger_id, date, trigger_at, home_team, away_team, key_player, key_line, stale_quotes, flags, note, reappeared_at, "
-                    "key_played from triggers order by trigger_at desc limit ?", conn, params=(n,))
-    F = pd.read_sql("select flagged_at, player, prop_type, side, book, line, over_odds, under_odds, fair_pre, fair_pred, value_pred, still_2, "
-                    "still_5, still_10, gone_at, value_close, actual, played, won, key_player from flags order by flagged_at desc limit ?",
+                    "key_played, books_off_t0, check_at, dk_back_2, books_off_2, strict from triggers order by trigger_at desc limit ?",
                     conn, params=(n,))
+    F = pd.read_sql("select flagged_at, player, prop_type, side, book, line, over_odds, under_odds, fair_pre, fair_pred, value_pred, still_2, "
+                    "still_5, still_10, gone_at, value_close, actual, played, won, key_player, mate_pulled from flags "
+                    "order by flagged_at desc limit ?", conn, params=(n,))
     FF = pd.read_sql("select flagged_at, mins_after, player, prop_type, side, book, line, over_odds, under_odds, n_movers, movers, fair_ff, "
-                     "value_ff, still_2, still_5, still_10, gone_at, value_close, actual, played, won, key_player from ff_flags "
+                     "value_ff, still_2, still_5, still_10, gone_at, value_close, actual, played, won, key_player, mate_pulled from ff_flags "
                      "order by flagged_at desc limit ?", conn, params=(n,))
     return {"triggers": json.loads(T.to_json(orient="records")), "flags": json.loads(F.to_json(orient="records")),
             "fast_book_measurement_flags": json.loads(FF.to_json(orient="records"))}
@@ -743,8 +898,9 @@ def scheduled(cmd: str) -> str:
         try:
             if cmd == "tick":
                 tick()
-            elif cmd == "grade":
+            elif cmd == "grade":  # the grade and then the full report, so the web app's log holds every result
                 grade(False)
+                report()
             elif cmd == "report":
                 report()
         except SystemExit as e:

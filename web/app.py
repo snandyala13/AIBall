@@ -223,7 +223,7 @@ async def startup_preload():
 async def _news_monitor_scheduler():
     """Every minute while the server is up: news_monitor.tick(), which polls only games within 3 hours of tip (about 2,000-3,000
     credits on a ten-game night; NEWS_MONITOR_DAILY_CAP stops it). Once a day from noon Eastern, after the paper log's morning
-    box-score refresh: grade finished games."""
+    box-score refresh: grade finished games and log the full report, line by line."""
     import pytz
     et = pytz.timezone("US/Eastern")
     loop = asyncio.get_running_loop()
@@ -239,7 +239,8 @@ async def _news_monitor_scheduler():
             if graded_on != now_et.date() and now_et.hour >= 12:
                 out = await asyncio.to_thread(news_monitor.scheduled, "grade")
                 graded_on = now_et.date()
-                logger.info("News monitor graded: %s", " | ".join(out.strip().splitlines()[-3:]))
+                for line in out.strip().splitlines():
+                    logger.info("News monitor graded: %s", line)
             out = await asyncio.to_thread(news_monitor.scheduled, "tick")
             for line in out.strip().splitlines():
                 logger.info("News monitor: %s", line)
@@ -250,7 +251,8 @@ async def _news_monitor_scheduler():
 
 async def _paper_log_scheduler():
     """Every 30 minutes from 9:00 to 21:30 Eastern while the server is up: pull live prices (Odds API, about 5 credits a game)
-    and log unders priced 2%+ above the fair price (paper_log.py). Once a day: refresh box scores and grade finished games."""
+    and log unders priced 2%+ above the fair price (paper_log.py). Once a day: refresh box scores, grade finished games and log
+    the full report, line by line."""
     import pytz
     et = pytz.timezone("US/Eastern")
     await asyncio.sleep(90)
@@ -263,7 +265,8 @@ async def _paper_log_scheduler():
             if graded_on != now_et.date() and now_et.hour >= 8:
                 out = await asyncio.to_thread(paper_log.scheduled, "grade")
                 graded_on = now_et.date()
-                logger.info("Paper log graded: %s", " | ".join(out.strip().splitlines()[-6:]))
+                for line in out.strip().splitlines():
+                    logger.info("Paper log graded: %s", line)
             if 9 <= now_et.hour <= 21:
                 out = await asyncio.to_thread(paper_log.scheduled, "poll")
                 logger.info("Paper log poll: %s", " | ".join(out.strip().splitlines()[:2]))
