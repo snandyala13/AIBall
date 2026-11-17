@@ -11,6 +11,9 @@ de-vigged probability moved to the book's line, otherwise the average of three o
     python paper_log.py grade [--refresh-box]       # after games finish: results, and the last price seen before tip
     python paper_log.py report
 
+The report also measures, from the quotes already stored (no API calls), each graded flag's value against the fair price at
+the last poll before tip, and whether the next poll still showed the flagged price (added 2026-11-17 for the reading rule).
+
 On the deployed web app the same steps run on a schedule (web/app.py, _paper_log_scheduler): a poll every 30 minutes from
 9:00 to 21:30 Eastern while the server is up, and a grade once a day. There the log lives on the shared EFS volume.
 A local dev server does not run the schedule unless PAPER_LOG_ENABLED=1.
@@ -188,6 +191,113 @@ def grade(refresh_box: bool):
     _say(f"graded {done} flags")
 
 
+def _mean_ci(x: pd.Series, cluster: pd.Series) -> tuple:
+    """Mean and a 95% half-width with each cluster (here: each game) counted as one unit."""
+    x = np.asarray(x, dtype=float)
+    m, n = x.mean(), len(x)
+    s = pd.Series(x - m).groupby(np.asarray(cluster)).sum()
+    g = len(s)
+    return m, (1.96 * np.sqrt(g / (g - 1) * (s ** 2).sum()) / n if g > 1 else float("nan"))
+
+
+def _fair_under_at(conn, F: pd.DataFrame, poll_of: dict) -> pd.Series:
+    """Rule S1's fair under-probability at each flag's own line, from the stored quotes of one poll per flag (poll_of: index of F ->
+    poll_id), with the flag's own book left out, as poll() computes it at first sight. Each flag is priced in a group of its own,
+    so flags never price one another."""
+    import market_lab as ml
+    from clean_backtest import norm_name
+
+    want = pd.DataFrame({"event_id": F["event_id"], "poll_id": pd.Series(poll_of, dtype=float)}).dropna()
+    parts = []
+    for (eid, pid), w in want.groupby(["event_id", "poll_id"]):
+        Q = pd.read_sql("select book, prop_type, player, line, over_odds, under_odds from quotes where event_id = ? and poll_id = ? order by rowid",
+                        conn, params=(eid, int(pid)))
+        Q["player_id"] = Q["player"].map(norm_name)
+        for i in w.index:
+            f = F.loc[i]
+            pid_f = norm_name(f["player"])
+            k = Q[(Q["player_id"] == pid_f) & (Q["prop_type"] == f["prop_type"])].drop_duplicates("book")   # poll() keeps a book's first quote
+            k = k[k["book"] != f["book"]]
+            if k.empty:
+                continue
+            parts.append(k.assign(date=f"#{i}", fid=np.nan))
+            parts.append(pd.DataFrame([{"book": f["book"], "prop_type": f["prop_type"], "player": f["player"], "line": float(f["line"]),
+                                        "over_odds": -110, "under_odds": -110, "player_id": pid_f, "date": f"#{i}", "fid": float(i)}]))
+    if not parts:
+        return pd.Series(dtype=float)
+    C = ml.add_consensus(pd.concat(parts, ignore_index=True), _sigma())
+    C = C[C["fid"].notna()]
+    return pd.Series((1 - C["p_s1"]).to_numpy(dtype=float), index=C["fid"].astype(int).to_numpy())
+
+
+def _after_first_sight(conn, G: pd.DataFrame) -> pd.DataFrame:
+    """For graded flags (indexed like G), from the quotes already stored:
+    fair_close  rule S1's fair under-probability at the flag's own line from the last poll before tip that priced the game;
+    next_ok     1 if the next poll that priced the game (normally 30 minutes later) showed the flag's book at the same line with an
+                under price as good or better, 0 if not (including when that book no longer quoted it), missing if no later poll did."""
+    from clean_backtest import norm_name
+
+    polls = pd.read_sql("select poll_id, polled_at from polls order by polled_at", conn)
+    close_of, next_of = {}, {}
+    for eid, grp in G.groupby("event_id"):
+        have = pd.read_sql("select distinct poll_id from quotes where event_id = ?", conn, params=(eid,))["poll_id"]
+        P = polls[polls["poll_id"].isin(have) & (polls["polled_at"] < grp["commence_time"].iloc[0])]
+        if P.empty:
+            continue
+        for i, f in grp.iterrows():
+            close_of[i] = int(P["poll_id"].iloc[-1])
+            later = P[P["polled_at"] > f["first_seen"]]
+            if len(later):
+                next_of[i] = int(later["poll_id"].iloc[0])
+    out = pd.DataFrame(index=G.index)
+    out["fair_close"] = _fair_under_at(conn, G, close_of)
+    out["next_ok"] = np.nan
+    want = pd.DataFrame({"event_id": G["event_id"], "poll_id": pd.Series(next_of, dtype=float)}).dropna()
+    for (eid, pid), w in want.groupby(["event_id", "poll_id"]):
+        Q = pd.read_sql("select book, prop_type, player, line, under_odds from quotes where event_id = ? and poll_id = ?", conn, params=(eid, int(pid)))
+        Q["player_id"] = Q["player"].map(norm_name)
+        for i in w.index:
+            f = G.loc[i]
+            k = Q[(Q["player_id"] == norm_name(f["player"])) & (Q["prop_type"] == f["prop_type"]) & (Q["book"] == f["book"])]
+            out.loc[i, "next_ok"] = float((((k["line"] - f["line"]).abs() < 1e-9) & (k["under_odds"] >= f["under_odds"])).any())
+    return out
+
+
+def _report_close(conn, G: pd.DataFrame):
+    """Report lines for value at the closing fair price and for flags lasting to the next poll (added 2026-11-17; the logging rule
+    is unchanged). Intervals count each game as one cluster."""
+    from clean_backtest import _dec
+
+    G = G.join(_after_first_sight(conn, G))
+    V = G[G["fair_close"].notna()].copy()
+    V["v_first"], V["v_close"] = V["ev"] * 100, (V["dec"] * V["fair_close"] - 1) * 100
+    V["v_move"] = (V["fair_close"] - V["fair_under"]) * 100
+
+    def val(v: pd.DataFrame) -> str:
+        if v.empty:
+            return "   0 bets"
+        m, ci = _mean_ci(v["v_close"], v["event_id"])
+        return (f"{len(v):>4} bets: at first sight {v['v_first'].mean():+5.2f}%, at close {m:+5.2f}% [±{ci:.2f}]; "
+                f"fair under-probability {v['v_move'].mean():+.1f} pts since first sight")
+
+    _say(f"   value against the closing fair price (rule S1 at the flag's own line, last poll before tip, the flag's book left out; "
+         f"found for {len(V):,} of {len(G):,} bets; interval: each game one cluster):")
+    _say(f"      all graded flags          {val(V)}")
+    _say(f"      value 4%+ at first sight  {val(V[V['ev'] >= 0.04])}")
+    for book, g in G.groupby("book"):
+        c = g[g["close_under_odds"].notna()]
+        same = f"{((_dec(c['under_odds']) / _dec(c['close_under_odds']) - 1) * 100).mean():+.2f}%" if len(c) else "none"
+        nx = g["next_ok"].dropna()
+        nxt = f"{nx.mean():.0%} of {len(nx)}" if len(nx) else "none"
+        _say(f"      {book:<26}{val(V[V['book'] == book])}; same book's last price {same}; on offer at the next poll {nxt}")
+    for d in sorted(V["date"].unique())[-7:]:
+        _say(f"      {d}                {val(V[V['date'] == d])}")
+    nx = G["next_ok"].dropna()
+    if len(nx):
+        _say(f"   still on offer at the next poll that priced the game (same book and line, under price as good or better; normally 30 min later): "
+             f"{nx.mean():.0%} of {len(nx):,} bets ({int(G['next_ok'].isna().sum())} had no later poll before tip)")
+
+
 def report():
     import market_lab as ml
     from clean_backtest import _dec
@@ -229,6 +339,12 @@ def report():
         move = f"{((_dec(c['under_odds']) / _dec(c['close_under_odds']) - 1) * 100).mean():+.2f}% on {len(c)}" if len(c) else "none"
         _say(f"      {d}  {int((F['date'] == d).sum()):>4} flags, void {int((F.loc[F['date'] == d, 'played'] == 0).sum())}; all {ml.fmt(ml.roi(g))}; "
              f"4%+ {ml.fmt(ml.roi(g[g['ev'] >= 0.04]))}; first seen vs last price {move}")
+    # Value at the closing fair price, and flags lasting to the next poll (added 2026-11-17: the reading rule needs both).
+    # Printed last and guarded, so a failure here never costs the lines above.
+    try:
+        _report_close(conn, G)
+    except Exception as e:
+        _say(f"   closing-price measures failed: {e!r}")
 
 
 def recent_flags(n: int = 50) -> list:
